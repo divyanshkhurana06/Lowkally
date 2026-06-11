@@ -14,7 +14,7 @@ from .gitlab_client import parse_gitlab_url
 from .mcp_discover import stream_gitlab_discover
 from .pipeline import stream_forge
 from .repo_insight import generate_repo_insight_async
-from .store import log_event, update_run
+from .store import get_run, log_event, update_run
 from .tools import set_active_run
 
 
@@ -201,6 +201,7 @@ async def stream_hybrid_run(
             "partial": False,
             "parts": [{"type": "text", "text": "Phase 2 — Gemini ADK agent bootstrap (multi-step tools)…"}],
         }
+        adk_error: str | None = None
         try:
             await _ensure_session(runner, user_id, session_id)
             prompt = _build_prompt(run_id, repo_url, branch, start_command)
@@ -209,28 +210,34 @@ async def stream_hybrid_run(
                     f"Environment approved for run {run_id}. "
                     "Call write_env_file with the approval id, then continue install/run until mark_run_success."
                 )
-            async for event in runner.run_async(
-                user_id=user_id,
-                session_id=session_id,
-                new_message=types.Content(role="user", parts=[types.Part(text=prompt)]),
-            ):
-                ev = _event_dict(event)
-                if ev.get("parts"):
-                    yield ev
-            return
+            async with asyncio.timeout(int(os.getenv("FORGE_ADK_TIMEOUT", "45"))):
+                async for event in runner.run_async(
+                    user_id=user_id,
+                    session_id=session_id,
+                    new_message=types.Content(role="user", parts=[types.Part(text=prompt)]),
+                ):
+                    ev = _event_dict(event)
+                    if ev.get("parts"):
+                        yield ev
+            run_row = get_run(run_id) or {}
+            if run_row.get("success_url"):
+                return
+        except TimeoutError:
+            adk_error = "Gemini ADK timed out — using fast pipeline"
         except Exception as exc:
             if not _is_quota_error(exc):
                 raise
+            adk_error = f"Gemini quota hit — falling back to deterministic pipeline: {str(exc)[:120]}"
+        if adk_error:
             yield {
                 "author": "lowkally",
                 "partial": False,
-                "parts": [
-                    {
-                        "type": "text",
-                        "text": f"Gemini quota hit — falling back to deterministic pipeline: {str(exc)[:120]}",
-                    }
-                ],
+                "parts": [{"type": "text", "text": adk_error}],
             }
+        else:
+            run_row = get_run(run_id) or {}
+            if run_row.get("success_url") or run_row.get("status") in ("running", "completed"):
+                return
 
     yield {
         "author": "lowkally",

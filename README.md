@@ -1,8 +1,22 @@
 # Lowkally
 
-Autonomous repository bootstrap engine — paste a git URL, get a running app.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+Autonomous repository bootstrap agent — paste a git URL, get a running app.
+
+**Google Cloud Rapid Agent Hackathon** · **GitLab track** · Gemini ADK + GitLab MCP on Cloud Run
+
+| | |
+|--|--|
+| **Live demo** | https://lowkally-ui-ksy3havi2a-uc.a.run.app |
+| **Source** | https://github.com/divyanshkhurana06/Lowkally |
+| **License** | [MIT](LICENSE) |
 
 Clone · detect stack · install · run · heal
+
+## Hackathon submission
+
+See **[HACKATHON.md](HACKATHON.md)** for Devpost checklist, demo video script, and how we meet each requirement (Gemini ADK, GitLab MCP, multi-step agent, hosted URL).
 
 ## Run locally
 
@@ -16,25 +30,28 @@ Open **http://localhost:3000**, paste a repo URL, click **Start run**.
 
 See **[DEPLOY.md](DEPLOY.md)** for Docker Compose, Cloud Run, and OAuth setup.
 
+```bash
+export GOOGLE_CLOUD_PROJECT=your-project
+export APP_URL=https://your-ui-url
+bash scripts/deploy-vercel-gcp.sh agent
+export AGENT_URL=...
+bash scripts/deploy-vercel-gcp.sh ui-cloudrun
+```
+
 ## Features
 
-- **Gemini ADK** + **GitLab MCP** multi-step agent (with pipeline fallback)
+- **Google ADK + Gemini** — multi-step tool agent (with deterministic pipeline fallback)
+- **GitLab MCP** — partner integration: discover README/manifests before clone
 - **Repo insight** — AI summary + tags from README
-- **Login** — GitHub / GitLab OAuth (per-user runs & library)
+- **Login** — GitHub / GitLab / Google OAuth (per-user runs & library)
 - **Library** — save & favorite sites, one-click open
 - **Compare** — split-screen two saved sites
-- **Report issue** — top-right feedback form
+- **Report issue** — feedback → GitHub Issues
 
 ## Environment
 
 Copy `.env.example` → `.env`. Key vars: `GOOGLE_API_KEY`, `GITLAB_PERSONAL_ACCESS_TOKEN`, `APP_URL`, `JWT_SECRET`, OAuth client IDs for production.
 
-## Test
-
-```bash
-python scripts/test_lowkally.py
-```
-
 ## License
 
-MIT
+MIT — Copyright (c) 2026 Divyansh Khurana. See [LICENSE](LICENSE).

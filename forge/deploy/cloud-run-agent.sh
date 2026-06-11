@@ -22,6 +22,11 @@ ENV_VARS+=",APP_URL=${APP_URL}"
 ENV_VARS+=",CORS_ORIGINS=${CORS_ORIGINS}"
 ENV_VARS+=",FORGE_WORKSPACE=/data/workspace"
 ENV_VARS+=",FORGE_DATA_DIR=/data/db"
+# Keep ADK + GitLab MCP visible for hackathon judges; pipeline fallback if ADK times out or quota hits.
+ENV_VARS+=",FORGE_BUILD_TIMEOUT=600"
+ENV_VARS+=",FORGE_MAX_ITERATIONS=3"
+ENV_VARS+=",FORGE_ADK_TIMEOUT=60"
+ENV_VARS+=",NODE_OPTIONS=--max-old-space-size=3072"
 ENV_VARS+=",GITLAB_API_URL=${GITLAB_API_URL:-https://gitlab.com/api/v4}"
 [ -n "${GITHUB_ISSUES_URL:-}" ] && ENV_VARS+=",GITHUB_ISSUES_URL=${GITHUB_ISSUES_URL}"
 
@@ -41,9 +46,11 @@ gcloud run deploy "$SERVICE" \
   --region "$REGION" \
   --platform managed \
   --allow-unauthenticated \
-  --memory 2Gi \
+  --memory 4Gi \
   --timeout 900 \
   --cpu 2 \
+  --max-instances 1 \
+  --no-cpu-throttling \
   --set-env-vars "$ENV_VARS"
 
 AGENT_URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')"

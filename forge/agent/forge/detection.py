@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import shutil
@@ -11,7 +12,16 @@ from pathlib import Path
 
 from .runtime_checks import docker_daemon_available
 
-_PREFERRED_RUN = ("dev", "start", "serve", "preview")
+_PREFERRED_RUN_LOCAL = ("dev", "start", "serve", "preview")
+_PREFERRED_RUN_CLOUD = ("start", "preview", "serve", "dev")
+
+
+def preferred_run_scripts() -> tuple[str, ...]:
+    """Cloud deploys prefer production start; local dev prefers hot-reload."""
+    app = os.getenv("APP_URL", "")
+    if app.startswith("https://"):
+        return _PREFERRED_RUN_CLOUD
+    return _PREFERRED_RUN_LOCAL
 _ENV_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*=", re.M)
 _ENV_LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*=\s*(.*)$", re.M)
 
@@ -280,13 +290,11 @@ def build_env_defaults(root: Path, *, user: dict | None = None) -> dict[str, str
 
 
 def is_dev_run_command(run: str | None) -> bool:
-    """True when the discovered run command starts a dev server (build step not required)."""
+    """True when the run command is a dev server (skip separate build step)."""
     if not run:
         return False
     lower = f" {run.lower()} "
-    if " dev" in lower or " run dev" in lower:
-        return True
-    return any(x in lower for x in (" run start", " npm start", " yarn start", " pnpm start", " bun start"))
+    return " dev" in lower or " run dev" in lower
 
 
 _STATIC_INDEX = ("index.html", "index.htm", "Index.html")
@@ -370,7 +378,7 @@ def _find_node_app_dir(root: Path) -> Path | None:
             scripts = json.loads((child / "package.json").read_text()).get("scripts", {})
         except (OSError, json.JSONDecodeError):
             scripts = {}
-        if any(k in scripts for k in _PREFERRED_RUN):
+        if any(k in scripts for k in preferred_run_scripts()):
             return child
         if best is None:
             best = child
@@ -686,14 +694,14 @@ def is_web_project(root: Path, stack: StackInfo, cmds: CommandSet) -> bool:
     if (root / "package.json").exists():
         try:
             scripts = json.loads((root / "package.json").read_text()).get("scripts", {})
-            return any(k in scripts for k in _PREFERRED_RUN)
+            return any(k in scripts for k in preferred_run_scripts())
         except (OSError, json.JSONDecodeError):
             pass
     sub = _find_node_app_dir(root)
     if sub:
         try:
             scripts = json.loads((sub / "package.json").read_text()).get("scripts", {})
-            return any(k in scripts for k in _PREFERRED_RUN)
+            return any(k in scripts for k in preferred_run_scripts())
         except (OSError, json.JSONDecodeError):
             pass
     return False
@@ -762,8 +770,10 @@ def _tailor_run_command(run: str | None, stack: StackInfo, root: Path) -> str | 
     if not run:
         return run
     fw = stack.framework or _framework_from_package_json(root)
-    if fw == "nextjs" and " run dev" in f" {run}":
+    if fw == "nextjs" and (" run dev" in f" {run}" or " run start" in f" {run}"):
         if "-p " not in run and "-p$" not in run.replace(" ", ""):
+            if os.getenv("APP_URL", "").startswith("https://") and " run start" in f" {run}":
+                return f"{run} -- -p $PORT"
             return f"{run} -- -p $PORT -H 127.0.0.1"
     if fw == "vite" and " run dev" in f" {run}":
         return run
@@ -787,7 +797,7 @@ def _from_package_json(root: Path) -> CommandSet | None:
         if name in scripts:
             build = f"{pm} run {name}"
             break
-    for name in _PREFERRED_RUN:
+    for name in preferred_run_scripts():
         if name in scripts:
             run = f"{pm} run {name}"
             break

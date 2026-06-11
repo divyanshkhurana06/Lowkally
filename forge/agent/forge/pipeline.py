@@ -38,7 +38,7 @@ from .executor import clone_repo, run_in_workspace
 from .healing import apply_rule, classify_errors, extract_app_url, find_free_port
 from .workspace import run_dir
 
-SERVER_PROBE_SECONDS = int(os.getenv("FORGE_SERVER_PROBE", "90"))
+SERVER_PROBE_SECONDS = int(os.getenv("FORGE_SERVER_PROBE", "180"))
 _RUN_ENV: dict[str, dict[str, str]] = {}
 _RUN_PROCS: dict[str, subprocess.Popen[str]] = {}
 
@@ -148,7 +148,12 @@ async def _probe_server(run_id: str, cwd: Path, command: str) -> dict[str, Any]:
     _RUN_PROCS[run_id] = proc
     output_lines: list[str] = []
     url: str | None = None
-    deadline = time.monotonic() + SERVER_PROBE_SECONDS
+    port = _run_env(run_id).get("PORT")
+    fallback_url = f"http://127.0.0.1:{port}" if port else None
+    probe_seconds = SERVER_PROBE_SECONDS
+    if is_dev_run_command(command):
+        probe_seconds = max(probe_seconds, int(os.getenv("FORGE_DEV_PROBE", "300")))
+    deadline = time.monotonic() + probe_seconds
     try:
         while time.monotonic() < deadline:
             if proc.stdout is None:
@@ -161,8 +166,12 @@ async def _probe_server(run_id: str, cwd: Path, command: str) -> dict[str, Any]:
                     break
             elif proc.poll() is not None:
                 break
-            elif url and await _verify_url(url):
-                break
+            else:
+                if not url and fallback_url and await _verify_url(fallback_url):
+                    url = fallback_url
+                    break
+                if url and await _verify_url(url):
+                    break
             await asyncio.sleep(0.2)
     except Exception:
         pass
@@ -440,6 +449,7 @@ async def stream_forge(
     if cmds.install:
         install_cmd = cmds.install
         install_ok = False
+        yield _agent_event(text=f"Installing dependencies ({install_cmd})…")
         while not store.iteration_limit_reached(run_id):
             yield _agent_event(call=("run_command", {"command": install_cmd}))
             install = await _run_step(run_id, cwd, install_cmd)
@@ -484,9 +494,17 @@ async def stream_forge(
             yield _agent_event(text="Install failed.")
             return
 
+    if (cwd / "prisma" / "schema.prisma").is_file():
+        yield _agent_event(text="Prisma detected — applying schema to local database…")
+        yield _agent_event(call=("run_command", {"command": "npx prisma db push --skip-generate"}))
+        prisma = await _run_step(run_id, cwd, "npx prisma db push --skip-generate", timeout=120)
+        yield _agent_event(response=("run_command", prisma))
+
     if cmds.build and web and not is_dev_run_command(cmds.run):
+        build_timeout = int(os.getenv("FORGE_BUILD_TIMEOUT", "600"))
+        yield _agent_event(text=f"Building app ({cmds.build}) — may take 1–3 min…")
         yield _agent_event(call=("run_command", {"command": cmds.build}))
-        build = await _run_step(run_id, cwd, cmds.build, timeout=300)
+        build = await _run_step(run_id, cwd, cmds.build, timeout=build_timeout)
         yield _agent_event(response=("run_command", build))
         if not build.get("success"):
             store.update_run(run_id, status="failed", error=(build.get("stderr") or "Build failed")[:500])
@@ -503,6 +521,7 @@ async def stream_forge(
         yield _agent_event(text="Could not discover a run command.")
         return
 
+    yield _agent_event(text=f"Starting app ({run_cmd})…")
     async for ev in _heal_loop(run_id, cwd, stack, run_cmd, web=web, user_id=user_id):
         yield ev
 

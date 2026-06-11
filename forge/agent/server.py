@@ -169,9 +169,13 @@ def _setup() -> dict[str, Any]:
         "oauth": oauth_configured(),
         "issues_url": os.getenv("GITHUB_ISSUES_URL"),
         "hackathon": {
+            "event": "Google Cloud Rapid Agent Hackathon",
+            "track": "GitLab",
             "beyond_chat": gemini,
             "multi_step_agent": gemini,
             "partner_mcp_gitlab": gitlab_token and gitlab_check.get("ok", False),
+            "google_adk": True,
+            "google_cloud_run": True,
             "human_env_gate": True,
             "deployable": True,
             "hybrid_mode": True,
