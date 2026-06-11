@@ -23,6 +23,7 @@ export type Setup = {
     partner_mcp_gitlab: boolean;
     human_env_gate: boolean;
     deployable: boolean;
+    hybrid_mode?: boolean;
   };
 };
 
@@ -62,8 +63,8 @@ export type RunEvent = {
 
 export type AgentPart =
   | { type: "text"; text: string }
-  | { type: "call"; name: string; args: Record<string, unknown> }
-  | { type: "response"; name: string; body: unknown };
+  | { type: "call"; name: string; args: Record<string, unknown>; source?: string }
+  | { type: "response"; name: string; body: unknown; source?: string };
 
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${BASE}${path}`, init);

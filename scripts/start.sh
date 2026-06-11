@@ -13,7 +13,7 @@ lsof -ti:3000 | xargs kill -9 2>/dev/null || true
 
 mkdir -p forge/data forge/workspace
 
-echo "Starting FORGE agent :8080"
+echo "Starting Lowkally agent :8080"
 cd forge/agent && python server.py &
 AGENT_PID=$!
 
@@ -34,13 +34,13 @@ if ! curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Starting FORGE UI :3000"
+echo "Starting Lowkally UI :3000"
 cd "$ROOT/forge/frontend"
 echo "API_URL=http://127.0.0.1:8080" > .env.local
 [ -d node_modules ] || npm install
 npm run dev &
 
 echo ""
-echo "FORGE → http://localhost:3000"
+echo "Lowkally → http://localhost:3000"
 echo "API   → http://localhost:8080/health"
 wait

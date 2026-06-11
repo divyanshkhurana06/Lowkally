@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def normalize_repo_url(url: str) -> str:
     return u if u.endswith("/") else u
 
 
-_MONOREPO_FRONTEND = ("frontend", "client", "web", "app", "ui")
+_MONOREPO_FRONTEND = ("frontend", "client", "web", "app", "ui", "miniapp")
 _MONOREPO_BACKEND = ("backend", "api", "server")
 _SKIP_DIRS = {"node_modules", ".git", "contracts", "dist", "build", ".next"}
 
@@ -130,12 +131,44 @@ def detect_stack(root: Path) -> StackInfo:
 
 
 def detect_package_manager(root: Path) -> str:
+    pkg = root / "package.json"
+    if pkg.is_file():
+        try:
+            pm_field = str(json.loads(pkg.read_text(encoding="utf-8")).get("packageManager", ""))
+            if pm_field.startswith("pnpm"):
+                return "pnpm"
+            if pm_field.startswith("yarn"):
+                return "yarn"
+            if pm_field.startswith("bun"):
+                return "bun"
+            if pm_field.startswith("npm"):
+                return "npm"
+        except (OSError, json.JSONDecodeError):
+            pass
     if (root / "pnpm-lock.yaml").exists():
         return "pnpm"
     if (root / "yarn.lock").exists():
         return "yarn"
     if (root / "bun.lockb").exists() or (root / "bun.lock").exists():
         return "bun"
+    return "npm"
+
+
+def resolve_pm_cmd(root: Path) -> str:
+    """Return a shell-invokable package manager (uses npx when not on PATH)."""
+    pm = detect_package_manager(root)
+    if pm == "pnpm":
+        if shutil.which("pnpm"):
+            return "pnpm"
+        return "npx --yes pnpm"
+    if pm == "yarn":
+        if shutil.which("yarn"):
+            return "yarn"
+        return "npx --yes yarn"
+    if pm == "bun":
+        if shutil.which("bun"):
+            return "bun"
+        return "npx --yes bun"
     return "npm"
 
 
@@ -164,7 +197,7 @@ def discover_commands(root: Path, stack: StackInfo, override_run: str | None = N
         if (root / "docker-compose.yml").exists():
             cmds = CommandSet(install="docker compose pull", run="docker compose up", source="docker-compose")
         else:
-            cmds = CommandSet(install="docker build -t forge-app .", run="docker run --rm -p 8080:8080 forge-app", source="Dockerfile")
+            cmds = CommandSet(install="docker build -t lowkally-app .", run="docker run --rm -p 8080:8080 lowkally-app", source="Dockerfile")
     else:
         cmds = _stack_defaults(stack)
 
@@ -243,9 +276,10 @@ def _merge(primary: CommandSet | None, fallback: CommandSet | None) -> CommandSe
     )
 
 
-def _default_install(root: Path, stack: StackInfo, pm: str) -> str | None:
+def _default_install(root: Path, stack: StackInfo, pm: str | None = None) -> str | None:
     if stack.runtime == "node":
-        return f"{pm} install"
+        cmd = resolve_pm_cmd(root) if pm is None else pm
+        return f"{cmd} install"
     if stack.runtime == "python":
         if (root / "uv.lock").exists():
             return "uv sync"
@@ -282,7 +316,7 @@ def _from_package_json(root: Path) -> CommandSet | None:
         data = json.loads(pkg_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    pm = detect_package_manager(root)
+    pm = resolve_pm_cmd(root)
     scripts: dict = data.get("scripts") or {}
     install = f"{pm} install"
     build = None

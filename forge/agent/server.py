@@ -1,4 +1,4 @@
-"""FORGE API server."""
+"""Lowkally API server."""
 
 from __future__ import annotations
 
@@ -13,13 +13,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google.adk.runners import InMemoryRunner
-from google.genai import types
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from forge import root_agent as forge_agent
 from forge.gitlab_client import list_projects, verify_token
-from forge.pipeline import stream_forge
+from forge.hybrid import stream_hybrid_run
 from forge.store import create_run, get_run, list_events, list_pending_approvals, list_runs, resolve_approval, update_run
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -37,7 +36,7 @@ async def lifespan(_app: FastAPI):
     runner = None
 
 
-app = FastAPI(title="FORGE", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Lowkally", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
@@ -72,7 +71,7 @@ def _setup() -> dict[str, Any]:
     gemini = bool(os.getenv("GOOGLE_API_KEY"))
     return {
         "gemini_configured": gemini,
-        "adk_agent": "forge",
+        "adk_agent": "lowkally",
         "gitlab_mcp": gitlab_token,
         "gitlab_api_ok": gitlab_check.get("ok", False),
         "gitlab_user": gitlab_check.get("username"),
@@ -89,73 +88,18 @@ def _setup() -> dict[str, Any]:
         "ready": True,
         "hackathon": {
             "beyond_chat": gemini,
-            "multi_step_agent": True,
+            "multi_step_agent": gemini,
             "partner_mcp_gitlab": gitlab_token and gitlab_check.get("ok", False),
             "human_env_gate": True,
             "deployable": True,
+            "hybrid_mode": True,
         },
     }
 
 
-def _event_dict(event: Any) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "author": getattr(event, "author", "agent"),
-        "partial": getattr(event, "partial", False),
-    }
-    if event.content and event.content.parts:
-        parts = []
-        for p in event.content.parts:
-            if p.text:
-                parts.append({"type": "text", "text": p.text})
-            if p.function_call:
-                parts.append(
-                    {
-                        "type": "call",
-                        "name": p.function_call.name,
-                        "args": dict(p.function_call.args or {}),
-                    }
-                )
-            if p.function_response:
-                parts.append(
-                    {
-                        "type": "response",
-                        "name": p.function_response.name,
-                        "body": p.function_response.response,
-                    }
-                )
-        out["parts"] = parts
-    return out
-
-
-async def _ensure_session(user_id: str, session_id: str) -> None:
-    assert runner is not None
-    session = await runner.session_service.get_session(
-        app_name="forge", user_id=user_id, session_id=session_id
-    )
-    if session is None:
-        await runner.session_service.create_session(
-            app_name="forge", user_id=user_id, session_id=session_id
-        )
-
-
-def _build_prompt(req: ForgeRequest, run_id: str) -> str:
-    lines = [
-        f"Forge run_id: {run_id}",
-        f"Repository: {req.repo_url}",
-    ]
-    if req.branch:
-        lines.append(f"Branch: {req.branch}")
-    if req.start_command:
-        lines.append(f"Preferred start command: {req.start_command}")
-    lines.append(
-        "Execute the full bootstrap workflow. Clone, inspect, install, run, heal until running or iteration limit."
-    )
-    return "\n".join(lines)
-
-
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "forge", **_setup()}
+    return {"status": "ok", "service": "lowkally", **_setup()}
 
 
 @app.get("/api/setup")
@@ -214,12 +158,16 @@ async def forge_stream(req: ForgeRequest) -> EventSourceResponse:
     async def generate() -> AsyncGenerator[dict[str, str], None]:
         _run_lock.add(run_id)
         try:
+            assert runner is not None
             yield {"event": "run", "data": json.dumps({"run_id": run_id, "session_id": session_id})}
-            async for event in stream_forge(
-                run_id,
-                req.repo_url,
-                req.branch,
-                req.start_command,
+            async for event in stream_hybrid_run(
+                runner,
+                run_id=run_id,
+                repo_url=req.repo_url,
+                branch=req.branch,
+                start_command=req.start_command,
+                session_id=session_id,
+                user_id=req.user_id,
                 resume=False,
             ):
                 yield {"event": "agent", "data": json.dumps(event)}
@@ -246,12 +194,16 @@ async def continue_stream(run_id: str, req: ContinueRequest) -> EventSourceRespo
 
     async def generate() -> AsyncGenerator[dict[str, str], None]:
         try:
+            assert runner is not None
             yield {"event": "run", "data": json.dumps({"run_id": run_id, "session_id": req.session_id})}
-            async for event in stream_forge(
-                run_id,
-                run["repo_url"],
-                run.get("branch"),
-                run.get("start_command"),
+            async for event in stream_hybrid_run(
+                runner,
+                run_id=run_id,
+                repo_url=run["repo_url"],
+                branch=run.get("branch"),
+                start_command=run.get("start_command"),
+                session_id=req.session_id,
+                user_id=req.user_id,
                 resume=True,
             ):
                 yield {"event": "agent", "data": json.dumps(event)}

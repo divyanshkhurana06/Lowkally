@@ -9,6 +9,8 @@ from typing import Any
 
 from . import store
 from .executor import clone_repo, run_in_workspace
+from .detection import discover_commands, detect_env_keys, detect_stack, is_web_project, parse_env_example
+from .executor import clone_repo, run_in_workspace
 from .gitlab_client import parse_gitlab_url
 from .workspace import resolve_file, run_dir
 
@@ -127,30 +129,29 @@ def run_command(command: str) -> dict[str, Any]:
 
 
 def detect_start_command() -> dict[str, Any]:
-    """Inspect the repo for package.json, pyproject.toml, Makefile, etc. and suggest start commands."""
+    """Detect stack and suggest install/build/run commands (RepoFix-style heuristics)."""
     run_id = _require_run()
     root = run_dir(run_id)
-    suggestions: list[str] = []
+    if not root.exists():
+        return {"error": "Clone the repository first"}
 
-    if (root / "package.json").exists():
-        suggestions.extend(["npm install", "npm run dev", "npm start", "npm run build"])
-    if (root / "pyproject.toml").exists() or (root / "requirements.txt").exists():
-        suggestions.extend(["pip install -r requirements.txt", "pip install -e .", "python -m uvicorn main:app --reload"])
-    if (root / "Cargo.toml").exists():
-        suggestions.extend(["cargo build", "cargo run"])
-    if (root / "go.mod").exists():
-        suggestions.extend(["go mod download", "go run ."])
-    if (root / "Makefile").exists():
-        suggestions.append("make")
+    stack = detect_stack(root)
+    cmds = discover_commands(root, stack)
+    env_keys = detect_env_keys(root)
+    env_defaults = parse_env_example(root)
 
-    env_example = None
-    for name in (".env.example", ".env.sample", "env.example"):
-        p = root / name
-        if p.exists():
-            env_example = p.read_text(encoding="utf-8", errors="replace")[:4000]
-            break
-
-    return {"suggestions": suggestions, "env_example": env_example}
+    return {
+        "runtime": stack.runtime,
+        "framework": stack.framework,
+        "install": cmds.install,
+        "build": cmds.build,
+        "run": cmds.run,
+        "source": cmds.source,
+        "web": is_web_project(root, stack, cmds),
+        "env_keys": env_keys,
+        "env_defaults": env_defaults,
+        "hint": "Run install command first, then run command. Use npx pnpm if pnpm lockfile present.",
+    }
 
 
 def request_env_write(keys: str) -> dict[str, Any]:

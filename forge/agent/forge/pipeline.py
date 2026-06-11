@@ -44,7 +44,7 @@ def _agent_event(
         parts.append({"type": "call", "name": call[0], "args": call[1]})
     if response:
         parts.append({"type": "response", "name": response[0], "body": response[1]})
-    return {"author": "forge", "partial": False, "parts": parts}
+    return {"author": "lowkally", "partial": False, "parts": parts}
 
 
 def _run_env(run_id: str) -> dict[str, str]:
@@ -281,7 +281,7 @@ async def stream_forge(
     cwd = run_dir(run_id)
 
     if not resume:
-        yield _agent_event(text=f"FORGE pipeline — {url}")
+        yield _agent_event(text=f"Lowkally pipeline — {url}")
         yield _agent_event(call=("clone_repository", {"repo_url": url, "branch": branch or ""}))
         clone = await asyncio.to_thread(clone_repo, url, cwd, branch or None)
         store.log_event(run_id, "clone", clone)
@@ -357,9 +357,18 @@ async def stream_forge(
         install = await _run_step(run_id, cwd, cmds.install, timeout=300)
         yield _agent_event(response=("run_command", install))
         if not install.get("success"):
-            store.update_run(run_id, status="failed", error=(install.get("stderr") or "Install failed")[:500])
-            yield _agent_event(text="Install failed.")
-            return
+            err = (install.get("stderr") or install.get("stdout") or "Install failed").strip()
+            if "pnpm: command not found" in err and "npx" not in (cmds.install or ""):
+                retry = (cmds.install or "").replace("pnpm", "npx --yes pnpm")
+                if retry != cmds.install:
+                    yield _agent_event(text="pnpm not on PATH — retrying with npx pnpm")
+                    yield _agent_event(call=("run_command", {"command": retry}))
+                    install = await _run_step(run_id, cwd, retry, timeout=300)
+                    yield _agent_event(response=("run_command", install))
+            if not install.get("success"):
+                store.update_run(run_id, status="failed", error=err[:500])
+                yield _agent_event(text="Install failed.")
+                return
 
     if cmds.build and web and not (cmds.run and " dev" in f" {cmds.run}"):
         yield _agent_event(call=("run_command", {"command": cmds.build}))

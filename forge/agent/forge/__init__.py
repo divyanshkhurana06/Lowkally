@@ -1,1 +1,1 @@
-"""FORGE — autonomous repository bootstrap engine."""
+"""Lowkally — autonomous repository bootstrap engine."""

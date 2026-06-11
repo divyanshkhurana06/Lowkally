@@ -1,4 +1,4 @@
-"""FORGE agent — Google ADK + GitLab MCP + workspace tools."""
+"""Lowkally agent — Google ADK + GitLab MCP + workspace tools."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from .tools import (
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-INSTRUCTION = """You are FORGE — an autonomous repository bootstrap engine (Google ADK + GitLab MCP).
+INSTRUCTION = """You are Lowkally — an autonomous repository bootstrap engine (Google ADK + GitLab MCP).
 
 MISSION: Clone a real git repository and make it run locally. Every action must use tools.
 
@@ -111,7 +111,7 @@ def build_tools() -> list:
 
 
 root_agent = Agent(
-    name="forge",
+    name="lowkally",
     model=MODEL,
     description="Clone a repository, fix runtime errors, and bring it up locally.",
     instruction=INSTRUCTION,

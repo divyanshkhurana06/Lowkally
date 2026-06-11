@@ -19,9 +19,9 @@ import {
 } from "@/lib/api";
 
 type Trace =
-  | { t: "text"; v: string }
-  | { t: "call"; name: string; args: Record<string, unknown> }
-  | { t: "response"; name: string; body: unknown };
+  | { t: "text"; v: string; author?: string }
+  | { t: "call"; name: string; args: Record<string, unknown>; author?: string; source?: string }
+  | { t: "response"; name: string; body: unknown; author?: string; source?: string };
 
 const STATUS_COLOR: Record<string, string> = {
   running: "var(--ok)",
@@ -148,14 +148,33 @@ export default function ForgeApp() {
       setPhase("Run started");
     }
     if (type === "agent" && data && typeof data === "object") {
-      const parts = (data as { parts?: AgentPart[] }).parts || [];
-      for (const p of parts) {
+      const d = data as { parts?: AgentPart[]; author?: string };
+      const author = d.author;
+      for (const p of d.parts || []) {
         if (p.type === "text") {
           setPhase(p.text.slice(0, 80));
-          pushTrace([{ t: "text", v: p.text }]);
+          pushTrace([{ t: "text", v: p.text, author }]);
         }
-        if (p.type === "call") pushTrace([{ t: "call", name: p.name, args: p.args }]);
-        if (p.type === "response") pushTrace([{ t: "response", name: p.name, body: p.body }]);
+        if (p.type === "call")
+          pushTrace([
+            {
+              t: "call",
+              name: p.name,
+              args: p.args,
+              author,
+              source: (p as { source?: string }).source,
+            },
+          ]);
+        if (p.type === "response")
+          pushTrace([
+            {
+              t: "response",
+              name: p.name,
+              body: p.body,
+              author,
+              source: (p as { source?: string }).source,
+            },
+          ]);
       }
     }
     if (type === "state" && data && typeof data === "object") {
@@ -236,7 +255,7 @@ export default function ForgeApp() {
 
       <header className="site-header">
         <div>
-          <h1>FORGE</h1>
+          <h1>Lowkally</h1>
           <p>Clone · detect stack · install · run · heal</p>
         </div>
         <StatusBar setup={setup} running={running} phase={phase} runStatus={finalRun?.status} />
@@ -263,7 +282,7 @@ export default function ForgeApp() {
               disabled={running || !setup?.ready || !repoUrl.trim()}
               onClick={onForge}
             >
-              {running ? phase || "Running…" : "Start forge run"}
+              {running ? phase || "Running…" : "Start run"}
             </button>
           </Panel>
 
@@ -272,7 +291,7 @@ export default function ForgeApp() {
               <a href={liveUrl} className="success-link" target="_blank" rel="noreferrer">
                 {liveUrl}
               </a>
-              <p className="hint mt-2">Open in a new tab — dev server started by FORGE.</p>
+              <p className="hint mt-2">Open in a new tab — dev server started by Lowkally.</p>
             </Panel>
           )}
 
@@ -369,10 +388,13 @@ function StatusBar({
   phase: string;
   runStatus?: string;
 }) {
+  const h = setup?.hackathon;
   return (
     <div className="status-bar">
-      <Tag ok={setup?.ready} text="Pipeline" />
-      <Tag ok={setup?.gitlab_api_ok} text={setup?.gitlab_user ? `@${setup.gitlab_user}` : "GitLab"} />
+      <Tag ok={h?.multi_step_agent} text="Gemini ADK" />
+      <Tag ok={h?.partner_mcp_gitlab} text="GitLab MCP" />
+      <Tag ok={setup?.pipeline} text="Pipeline fallback" />
+      <Tag ok={setup?.gitlab_api_ok} text={setup?.gitlab_user ? `@${setup.gitlab_user}` : "GitLab API"} />
       {running && <span className="pulse">{phase || "running"}</span>}
       {!running && runStatus && <span className="run-tag">{runStatus}</span>}
     </div>
@@ -393,11 +415,16 @@ function Tag({ ok, text }: { ok?: boolean; text: string }) {
 }
 
 function TraceLine({ item }: { item: Trace }) {
-  if (item.t === "text") return <div className="trace-text">{item.v}</div>;
+  const badge = item.author || item.source;
+  const label = badge ? `[${badge}] ` : "";
+  if (item.t === "text") return <div className="trace-text">{label}{item.v}</div>;
   if (item.t === "call")
     return (
       <div className="trace-call">
-        <strong>{item.name}</strong>
+        <strong>
+          {label}
+          {item.name}
+        </strong>
         <pre>{JSON.stringify(item.args, null, 2)}</pre>
       </div>
     );
@@ -413,6 +440,7 @@ function TraceLine({ item }: { item: Trace }) {
   return (
     <div className="trace-ok">
       <strong>
+        {label}
         {item.name}
         {summary ? ` → ${summary}` : ""}
       </strong>
