@@ -397,12 +397,6 @@ function ForgeApp() {
             </Panel>
           )}
 
-          {setup?.gitlab_scope_hint && (
-            <Panel title="GitLab token fix">
-              <p className="hint">{setup.gitlab_scope_hint}</p>
-            </Panel>
-          )}
-
           {userRepos.length > 0 && (
             <Panel title={`Your ${authUser?.provider === "github" ? "GitHub" : "GitLab"} repos`}>
               <p className="hint">One click to bootstrap locally.</p>
@@ -421,7 +415,6 @@ function ForgeApp() {
           {authUser && userReposError && !userRepos.length && (
             <Panel title="Your repositories">
               <p className="hint">{userReposError}</p>
-              <p className="hint mt-2">Log out and sign in again to grant repo access.</p>
             </Panel>
           )}
 

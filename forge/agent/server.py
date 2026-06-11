@@ -155,11 +155,6 @@ def _setup() -> dict[str, Any]:
         "gitlab_api_ok": gitlab_check.get("ok", False),
         "gitlab_user": gitlab_check.get("username"),
         "gitlab_error": gitlab_check.get("error") if not gitlab_check.get("ok") else None,
-        "gitlab_scope_hint": (
-            "Fine-grained token needs User: Read + Project/Repository/Code: Read on your projects."
-            if gitlab_token and not gitlab_check.get("ok")
-            else None
-        ),
         "filesystem_mcp": True,
         "pipeline": True,
         "model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),

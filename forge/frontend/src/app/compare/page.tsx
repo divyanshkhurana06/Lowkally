@@ -37,14 +37,18 @@ function CompareInner() {
   return (
     <div className="page-wrap compare-page">
       <div className="page-head">
-        <h1>Split compare</h1>
-        <p className="hint">
-          View two saved sites side by side. Localhost previews only work on the machine that ran them —
-          use public URLs or re-run from Library.
-        </p>
-        <Link href="/library" className="btn btn-ghost">
-          ← Library
-        </Link>
+        <div className="page-head-row">
+          <div className="page-head-copy">
+            <h1>Split compare</h1>
+            <p className="hint">
+              View two saved sites side by side. Localhost previews only work on the machine that ran them —
+              use public URLs or re-run from Library.
+            </p>
+          </div>
+          <Link href="/library" className="btn btn-ghost page-head-action">
+            ← Library
+          </Link>
+        </div>
       </div>
 
       <div className="compare-pickers">

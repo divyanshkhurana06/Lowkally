@@ -88,6 +88,19 @@ async def list_gitlab_repos(token: str, limit: int = 30) -> dict[str, Any]:
                 },
             )
         if r.status_code != 200:
+            try:
+                body = r.json()
+                if body.get("error") == "insufficient_scope":
+                    return {
+                        "repos": [],
+                        "error": (
+                            "GitLab needs the read_api permission to list your projects. "
+                            "Log out, then sign in again and approve access when GitLab asks."
+                        ),
+                        "provider": "gitlab",
+                    }
+            except Exception:
+                pass
             return {"repos": [], "error": r.text[:200], "provider": "gitlab"}
         data = r.json()
         return {

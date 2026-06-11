@@ -30,7 +30,6 @@ export type Setup = {
   gitlab_api_ok: boolean;
   gitlab_user?: string;
   gitlab_error?: string;
-  gitlab_scope_hint?: string;
   filesystem_mcp: boolean;
   pipeline?: boolean;
   model: string;

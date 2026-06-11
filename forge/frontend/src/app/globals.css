@@ -478,9 +478,37 @@ input:focus {
   padding: 24px 20px 48px;
 }
 
+.page-head {
+  margin-bottom: 20px;
+}
+
 .page-head h1 {
   margin: 0 0 8px;
   font-size: 22px;
+}
+
+.page-head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.page-head-copy {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.page-head-copy .hint {
+  margin: 0;
+  max-width: 52rem;
+}
+
+.page-head-action {
+  flex-shrink: 0;
+  align-self: flex-start;
 }
 
 textarea {

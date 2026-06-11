@@ -33,6 +33,9 @@ GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 GITLAB_CLIENT_ID = os.getenv("GITLAB_CLIENT_ID", "")
 GITLAB_CLIENT_SECRET = os.getenv("GITLAB_CLIENT_SECRET", "")
 GITLAB_OAUTH_URL = os.getenv("GITLAB_OAUTH_URL", "https://gitlab.com")
+# GitLab rejects scopes not enabled on your OAuth application.
+# read_user = sign-in; read_api = list your projects in the repo picker.
+GITLAB_OAUTH_SCOPES = os.getenv("GITLAB_OAUTH_SCOPES", "read_user read_api").strip()
 
 
 def oauth_configured() -> dict[str, bool]:
@@ -135,7 +138,7 @@ def gitlab_authorize_url() -> str:
         "client_id": GITLAB_CLIENT_ID,
         "redirect_uri": _callback_url("gitlab"),
         "response_type": "code",
-        "scope": "read_user read_api",
+        "scope": GITLAB_OAUTH_SCOPES,
         "state": state,
     }
     return f"{GITLAB_OAUTH_URL}/oauth/authorize?{urlencode(params)}"
