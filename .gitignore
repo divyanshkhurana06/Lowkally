@@ -1,0 +1,19 @@
+.env
+.env.local
+**/.env.local
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+.next/
+out/
+*.egg-info/
+dist/
+build/
+
+# Runtime data & cloned repos (never commit)
+forge/data/
+forge/workspace/
+forge/agent/forge/data/
+forge/agent/forge/workspace/

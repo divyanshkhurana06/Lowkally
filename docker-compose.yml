@@ -1,0 +1,33 @@
+services:
+  forge-agent:
+    build:
+      context: ./forge
+      dockerfile: agent/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      FORGE_WORKSPACE: /data/workspace
+      FORGE_DATA_DIR: /data/db
+      PORT: 8080
+      CORS_ORIGINS: http://localhost:3000
+    volumes:
+      - forge-workspace:/data/workspace
+      - forge-data:/data/db
+
+  forge-ui:
+    build:
+      context: ./forge/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      API_URL: http://forge-agent:8080
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+    depends_on:
+      - forge-agent
+
+volumes:
+  forge-workspace:
+  forge-data:
