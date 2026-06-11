@@ -1,0 +1,68 @@
+# Render Blueprint — deploy Lowkally (agent + UI) with one click.
+# Dashboard: New → Blueprint → connect this repo.
+# After deploy: set OAuth callback URLs to https://<lowkally-ui-host>/api/auth/.../callback
+
+services:
+  - type: web
+    name: lowkally-agent
+    runtime: docker
+    dockerfilePath: forge/agent/Dockerfile
+    dockerContext: forge
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: FORGE_WORKSPACE
+        value: /data/workspace
+      - key: FORGE_DATA_DIR
+        value: /data/db
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: APP_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GITLAB_PERSONAL_ACCESS_TOKEN
+        sync: false
+      - key: GITLAB_API_URL
+        value: https://gitlab.com/api/v4
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITLAB_CLIENT_ID
+        sync: false
+      - key: GITLAB_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_ISSUES_URL
+        value: https://github.com/divyanshkhurana06/Lowkally/issues
+      - key: GITHUB_ISSUES_TOKEN
+        sync: false
+    disk:
+      name: lowkally-data
+      mountPath: /data
+      sizeGB: 10
+
+  - type: web
+    name: lowkally-ui
+    runtime: docker
+    dockerfilePath: forge/frontend/Dockerfile
+    dockerContext: forge/frontend
+    plan: starter
+    envVars:
+      - key: API_URL
+        fromService:
+          name: lowkally-agent
+          type: web
+          property: host
+      - key: NODE_ENV
+        value: production

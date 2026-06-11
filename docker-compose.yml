@@ -11,7 +11,9 @@ services:
       FORGE_WORKSPACE: /data/workspace
       FORGE_DATA_DIR: /data/db
       PORT: 8080
-      CORS_ORIGINS: http://localhost:3000
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     volumes:
       - forge-workspace:/data/workspace
       - forge-data:/data/db

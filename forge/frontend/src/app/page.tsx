@@ -1,22 +1,31 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   approveEnv,
   continueRun,
   forgeStream,
   getApprovals,
+  getAuthMe,
   getGitLabProjects,
   getRunDetail,
+  getUserRepos,
   getRuns,
   getSetup,
+  normalizeInsightLabels,
+  normalizeRepoUrl,
+  saveSite,
   type AgentPart,
   type Approval,
+  type AuthUser,
   type GitLabProject,
   type Run,
   type RunEvent,
+  type RepoInsight,
   type Setup,
 } from "@/lib/api";
+import { queueReport } from "@/lib/reportContext";
 
 type Trace =
   | { t: "text"; v: string; author?: string }
@@ -51,10 +60,16 @@ function eventsToTrace(events: RunEvent[]): Trace[] {
   return out;
 }
 
-export default function ForgeApp() {
+function ForgeApp() {
+  const searchParams = useSearchParams();
   const [setup, setSetup] = useState<Setup | null>(null);
   const [projects, setProjects] = useState<GitLabProject[]>([]);
-  const [repoUrl, setRepoUrl] = useState("github.com/divyanshkhurana06/portfolio");
+  const [userRepos, setUserRepos] = useState<GitLabProject[]>([]);
+  const [userReposError, setUserReposError] = useState("");
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [repoUrl, setRepoUrl] = useState(
+    () => searchParams.get("repo") || "github.com/divyanshkhurana06/portfolio",
+  );
   const [branch, setBranch] = useState("");
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState("");
@@ -67,6 +82,7 @@ export default function ForgeApp() {
   const [history, setHistory] = useState<Run[]>([]);
   const [offline, setOffline] = useState(false);
   const [streamError, setStreamError] = useState("");
+  const [repoInsight, setRepoInsight] = useState<RepoInsight | null>(null);
   const traceRef = useRef<HTMLDivElement>(null);
 
   const scrollTrace = () => {
@@ -80,6 +96,21 @@ export default function ForgeApp() {
       setHistory(r.runs);
       setApprovals(a.approvals);
       setOffline(false);
+      try {
+        const auth = await getAuthMe();
+        setAuthUser(auth.user);
+        if (auth.user?.provider === "github" || auth.user?.provider === "gitlab") {
+          const ur = await getUserRepos();
+          setUserRepos(ur.repos || []);
+          setUserReposError(ur.error || "");
+        } else {
+          setUserRepos([]);
+          setUserReposError("");
+        }
+      } catch {
+        setAuthUser(null);
+        setUserRepos([]);
+      }
       if (s.gitlab_api_ok) {
         try {
           const gp = await getGitLabProjects();
@@ -120,9 +151,19 @@ export default function ForgeApp() {
           setPhase("Installing / running…");
         } else if (detail.run.status === "running") {
           setPhase("App is live");
-        } else if (detail.run.status === "failed") {
+        } else         if (detail.run.status === "failed") {
           setPhase("Failed");
           setRunning(false);
+        }
+        const insightEv = detail.events.find((e) => e.kind === "repo_insight");
+        if (insightEv?.payload) {
+          const p = insightEv.payload as RepoInsight;
+          if (p.summary) {
+            setRepoInsight({
+              ...p,
+              labels: normalizeInsightLabels(p.labels),
+            });
+          }
         }
       } catch {
         /* ignore poll errors */
@@ -146,6 +187,16 @@ export default function ForgeApp() {
       setRunId(d.run_id);
       setSessionId(d.session_id);
       setPhase("Run started");
+    }
+    if (type === "insight" && data && typeof data === "object") {
+      const d = data as RepoInsight & { type?: string };
+      if (d.summary) {
+        setRepoInsight({
+          summary: d.summary,
+          labels: normalizeInsightLabels(d.labels),
+          source: d.source,
+        });
+      }
     }
     if (type === "agent" && data && typeof data === "object") {
       const d = data as { parts?: AgentPart[]; author?: string };
@@ -202,13 +253,14 @@ export default function ForgeApp() {
     if (!repoUrl.trim() || running) return;
     setRunning(true);
     setStreamError("");
+    setRepoInsight(null);
     setTrace([{ t: "text", v: "Connecting to agent…" }]);
     setFinalRun(null);
     setRunId(null);
     setSessionId(null);
     setPhase("Starting…");
     try {
-      await forgeStream(repoUrl.trim(), branch.trim(), handleStream);
+      await forgeStream(normalizeRepoUrl(repoUrl.trim()), branch.trim(), handleStream);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setStreamError(msg);
@@ -244,6 +296,18 @@ export default function ForgeApp() {
   const liveUrl =
     finalRun?.success_url && finalRun.success_url.startsWith("http") ? finalRun.success_url : null;
 
+  const onSave = async (favorite = false) => {
+    if (!repoUrl.trim()) return;
+    await saveSite({
+      repo_url: repoUrl.trim(),
+      run_id: runId || undefined,
+      success_url: liveUrl || undefined,
+      summary: repoInsight?.summary,
+      labels: repoInsight?.labels,
+      favorite,
+    });
+  };
+
   return (
     <div className="min-h-screen flex flex-col">
       {offline && (
@@ -255,8 +319,7 @@ export default function ForgeApp() {
 
       <header className="site-header">
         <div>
-          <h1>Lowkally</h1>
-          <p>Clone · detect stack · install · run · heal</p>
+          <p className="run-subtitle">Clone · detect stack · install · run · heal</p>
         </div>
         <StatusBar setup={setup} running={running} phase={phase} runStatus={finalRun?.status} />
       </header>
@@ -265,7 +328,7 @@ export default function ForgeApp() {
         <aside className="sidebar">
           <Panel title="Repository">
             <input
-              placeholder="https://github.com/you/project"
+              placeholder="github.com/you/project or full https URL"
               value={repoUrl}
               disabled={running}
               onChange={(e) => setRepoUrl(e.target.value)}
@@ -286,18 +349,51 @@ export default function ForgeApp() {
             </button>
           </Panel>
 
+          {repoInsight && (
+            <Panel title="Repo insight">
+              <p className="insight-summary">{repoInsight.summary}</p>
+              <InsightLabels labels={repoInsight.labels} />
+              {repoInsight.source && (
+                <p className="hint mt-2">
+                  via {repoInsight.source === "gemini" ? "Gemini" : "stack heuristics"}
+                </p>
+              )}
+            </Panel>
+          )}
+
           {liveUrl && (
             <Panel title="Live app">
               <a href={liveUrl} className="success-link" target="_blank" rel="noreferrer">
                 {liveUrl}
               </a>
               <p className="hint mt-2">Open in a new tab — dev server started by Lowkally.</p>
+              <div className="library-actions mt-2">
+                <button type="button" className="btn btn-solid" onClick={() => onSave(false)}>
+                  Save to library
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => onSave(true)}>
+                  ★ Favorite
+                </button>
+              </div>
             </Panel>
           )}
 
           {finalRun?.status === "failed" && finalRun.error && (
             <Panel title="Failure">
               <pre className="err-pre">{finalRun.error.slice(0, 400)}</pre>
+              <button
+                type="button"
+                className="btn btn-ghost mt-2"
+                onClick={() =>
+                  queueReport({
+                    subject: `Run failed: ${repoUrl.replace(/^https?:\/\//, "").slice(0, 80)}`,
+                    body: `Repository: ${repoUrl}\nRun ID: ${finalRun.id}\n\nError:\n${finalRun.error}`,
+                    repo_url: repoUrl,
+                  })
+                }
+              >
+                Report this error
+              </button>
             </Panel>
           )}
 
@@ -307,7 +403,29 @@ export default function ForgeApp() {
             </Panel>
           )}
 
-          {projects.length > 0 && (
+          {userRepos.length > 0 && (
+            <Panel title={`Your ${authUser?.provider === "github" ? "GitHub" : "GitLab"} repos`}>
+              <p className="hint">One click to bootstrap locally.</p>
+              <ul className="project-list">
+                {userRepos.slice(0, 12).map((p) => (
+                  <li key={`${p.id}-${p.path_with_namespace}`}>
+                    <button type="button" disabled={running} onClick={() => pickProject(p)}>
+                      <span className="proj-name">{p.path_with_namespace}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </Panel>
+          )}
+
+          {authUser && userReposError && !userRepos.length && (
+            <Panel title="Your repositories">
+              <p className="hint">{userReposError}</p>
+              <p className="hint mt-2">Log out and sign in again to grant repo access.</p>
+            </Panel>
+          )}
+
+          {!authUser && projects.length > 0 && (
             <Panel title="GitLab projects">
               <ul className="project-list">
                 {projects.slice(0, 8).map((p) => (
@@ -414,8 +532,31 @@ function Tag({ ok, text }: { ok?: boolean; text: string }) {
   return <span className={`tag ${ok ? "tag-ok" : "tag-off"}`}>{text}</span>;
 }
 
+function InsightLabels({ labels }: { labels: string[] }) {
+  const chips = normalizeInsightLabels(labels);
+  if (!chips.length) return null;
+  return (
+    <div className="insight-labels" role="list" aria-label="Repository tags">
+      {chips.map((label, i) => (
+        <span key={`${label}-${i}`} className={`insight-label insight-label-${i % 3}`} role="listitem">
+          {label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export default function ForgePage() {
+  return (
+    <Suspense fallback={<div className="page-wrap"><p className="hint">Loading…</p></div>}>
+      <ForgeApp />
+    </Suspense>
+  );
+}
+
 function TraceLine({ item }: { item: Trace }) {
-  const badge = item.author || item.source;
+  const badge =
+    item.author || (item.t !== "text" ? item.source : undefined);
   const label = badge ? `[${badge}] ` : "";
   if (item.t === "text") return <div className="trace-text">{label}{item.v}</div>;
   if (item.t === "call")

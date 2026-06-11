@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from typing import Any
@@ -12,7 +13,8 @@ from google.genai import types
 from .gitlab_client import parse_gitlab_url
 from .mcp_discover import stream_gitlab_discover
 from .pipeline import stream_forge
-from .store import update_run
+from .repo_insight import generate_repo_insight_async
+from .store import log_event, update_run
 from .tools import set_active_run
 
 
@@ -110,6 +112,24 @@ async def _ensure_session(runner: InMemoryRunner, user_id: str, session_id: str)
         )
 
 
+async def _emit_insight_if_ready(
+    task: asyncio.Task | None,
+    *,
+    run_id: str,
+    sent: bool,
+) -> tuple[dict[str, Any] | None, bool]:
+    if sent or task is None or not task.done():
+        return None, sent
+    try:
+        insight = task.result()
+        if not insight:
+            return None, sent
+        log_event(run_id, "repo_insight", insight)
+        return {"type": "repo_insight", **insight}, True
+    except Exception:
+        return None, sent
+
+
 async def stream_hybrid_run(
     runner: InMemoryRunner,
     *,
@@ -125,6 +145,19 @@ async def stream_hybrid_run(
     set_active_run(run_id)
     update_run(run_id, status="active")
 
+    insight_task: asyncio.Task | None = None
+    insight_sent = False
+
+    if not resume:
+        insight_task = asyncio.create_task(
+            generate_repo_insight_async(repo_url, branch)
+        )
+        yield {
+            "author": "lowkally",
+            "partial": False,
+            "parts": [{"type": "text", "text": "Gemini — reading README for repo insight…"}],
+        }
+
     if not resume and parse_gitlab_url(repo_url) and os.getenv("GOOGLE_API_KEY"):
         yield {
             "author": "lowkally",
@@ -134,12 +167,31 @@ async def stream_hybrid_run(
         try:
             async for ev in stream_gitlab_discover(repo_url, f"{session_id}_gitlab", user_id):
                 yield ev
+                insight_ev, insight_sent = await _emit_insight_if_ready(
+                    insight_task, run_id=run_id, sent=insight_sent
+                )
+                if insight_ev:
+                    yield insight_ev
         except Exception as exc:
             yield {
                 "author": "lowkally",
                 "partial": False,
                 "parts": [{"type": "text", "text": f"GitLab MCP discover warning: {exc}"}],
             }
+
+    if insight_task and not insight_sent:
+        try:
+            insight = await asyncio.wait_for(asyncio.shield(insight_task), timeout=12.0)
+            if insight:
+                log_event(run_id, "repo_insight", insight)
+                yield {"type": "repo_insight", **insight}
+                insight_sent = True
+        except (asyncio.TimeoutError, Exception):
+            insight_ev, insight_sent = await _emit_insight_if_ready(
+                insight_task, run_id=run_id, sent=insight_sent
+            )
+            if insight_ev:
+                yield insight_ev
 
     use_agent = bool(os.getenv("GOOGLE_API_KEY")) and os.getenv("LOWKALLY_PIPELINE_ONLY") != "1"
 
@@ -191,5 +243,6 @@ async def stream_hybrid_run(
         branch,
         start_command,
         resume=resume,
+        user_id=user_id,
     ):
         yield event

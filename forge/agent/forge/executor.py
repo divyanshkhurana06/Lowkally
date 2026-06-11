@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .detection import normalize_repo_url
+
 DEFAULT_TIMEOUT = int(os.getenv("FORGE_CMD_TIMEOUT", "120"))
 
 
@@ -58,10 +60,11 @@ def clone_repo(repo_url: str, dest: Path, branch: str | None = None) -> dict[str
     if dest.exists() and any(dest.iterdir()):
         return {"success": True, "path": str(dest), "note": "workspace already populated"}
 
+    url = normalize_repo_url(repo_url)
     cmd = ["git", "clone", "--depth", "1"]
     if branch:
         cmd.extend(["--branch", branch])
-    cmd.extend([repo_url, str(dest)])
+    cmd.extend([url, str(dest)])
 
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)

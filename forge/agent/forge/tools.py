@@ -8,8 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from . import store
-from .executor import clone_repo, run_in_workspace
-from .detection import discover_commands, detect_env_keys, detect_stack, is_web_project, parse_env_example
+from .detection import (
+    build_env_defaults,
+    detect_env_keys,
+    detect_stack,
+    discover_commands,
+    env_export_statements,
+    env_relative_path,
+    is_web_project,
+    normalize_repo_url,
+    parse_env_file,
+)
 from .executor import clone_repo, run_in_workspace
 from .gitlab_client import parse_gitlab_url
 from .workspace import resolve_file, run_dir
@@ -34,6 +43,7 @@ def _require_run() -> str:
 
 def inspect_repo_url(repo_url: str) -> dict[str, Any]:
     """Parse repo URL and return host hints (GitLab project path if applicable)."""
+    repo_url = normalize_repo_url(repo_url)
     gl = parse_gitlab_url(repo_url)
     return {
         "url": repo_url,
@@ -54,7 +64,7 @@ def clone_repository(repo_url: str, branch: str = "") -> dict[str, Any]:
     """
     run_id = _require_run()
     dest = run_dir(run_id)
-    result = clone_repo(repo_url, dest, branch or None)
+    result = clone_repo(normalize_repo_url(repo_url), dest, branch or None)
     store.log_event(run_id, "clone", result)
     if result.get("success"):
         store.update_run(run_id, workspace_path=str(dest), status="cloned")
@@ -119,7 +129,8 @@ def run_command(command: str) -> dict[str, Any]:
     env_file = cwd / ".env"
     cmd = command
     if env_file.exists():
-        cmd = f"set -a && source .env && set +a && {command}"
+        exports = " && ".join(env_export_statements(parse_env_file(env_file)))
+        cmd = f"{exports} && {command}" if exports else command
     result = run_in_workspace(cwd, cmd)
     store.log_event(run_id, "command", result)
     if not result.get("success"):
@@ -138,7 +149,8 @@ def detect_start_command() -> dict[str, Any]:
     stack = detect_stack(root)
     cmds = discover_commands(root, stack)
     env_keys = detect_env_keys(root)
-    env_defaults = parse_env_example(root)
+    env_defaults = build_env_defaults(root)
+    env_path = env_relative_path(root)
 
     return {
         "runtime": stack.runtime,
@@ -150,6 +162,7 @@ def detect_start_command() -> dict[str, Any]:
         "web": is_web_project(root, stack, cmds),
         "env_keys": env_keys,
         "env_defaults": env_defaults,
+        "env_path": env_path,
         "hint": "Run install command first, then run command. Use npx pnpm if pnpm lockfile present.",
     }
 
@@ -187,11 +200,14 @@ def write_env_file(approval_id: str) -> dict[str, Any]:
 
     values = approval.get("values") or {}
     lines = [f"{k}={v}" for k, v in values.items()]
-    target = resolve_file(run_id, ".env")
+    run_root = run_dir(run_id)
+    rel = env_relative_path(run_root)
+    target = resolve_file(run_id, rel)
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    store.log_event(run_id, "env_written", {"keys": list(values.keys())})
+    store.log_event(run_id, "env_written", {"keys": list(values.keys()), "path": rel})
     store.update_run(run_id, status="healing")
-    return {"written": True, "path": ".env", "keys": list(values.keys())}
+    return {"written": True, "path": rel, "keys": list(values.keys())}
 
 
 def mark_run_success(local_url: str, summary: str) -> dict[str, Any]:

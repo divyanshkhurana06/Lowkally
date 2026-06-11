@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
+import { agentApiUrl } from "@/lib/agentUrl";
 
-const API = process.env.API_URL || "http://127.0.0.1:8080";
+const API = agentApiUrl();
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,9 +14,13 @@ export async function POST(
   const body = await req.text();
   let upstream: Response;
   try {
+    const cookie = req.headers.get("cookie");
     upstream = await fetch(`${API}/api/runs/${runId}/continue/stream`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
       body,
       cache: "no-store",
     });

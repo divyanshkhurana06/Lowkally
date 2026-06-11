@@ -1,0 +1,54 @@
+# Production: agent + UI + Caddy (single public URL). Point DNS at this host.
+services:
+  forge-agent:
+    build:
+      context: ./forge
+      dockerfile: agent/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      FORGE_WORKSPACE: /data/workspace
+      FORGE_DATA_DIR: /data/db
+      PORT: 8080
+      CORS_ORIGINS: ${APP_URL}
+    volumes:
+      - forge-workspace:/data/workspace
+      - forge-data:/data/db
+    expose:
+      - "8080"
+
+  forge-ui:
+    build:
+      context: ./forge/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      API_URL: http://forge-agent:8080
+      NODE_ENV: production
+    depends_on:
+      - forge-agent
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_HOST: ${APP_HOST:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - forge-ui
+      - forge-agent
+
+volumes:
+  forge-workspace:
+  forge-data:
+  caddy-data:
+  caddy-config:

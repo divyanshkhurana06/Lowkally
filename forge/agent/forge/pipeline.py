@@ -16,13 +16,24 @@ from typing import Any
 from . import store
 from .detection import (
     StackInfo,
+    adjust_stack_for_host,
+    build_env_defaults,
+    compose_http_url,
     detect_env_keys,
     detect_stack,
     discover_commands,
+    env_export_statements,
+    env_file_path,
+    format_env_line,
+    is_dev_run_command,
+    is_docker_command,
     is_web_project,
     normalize_repo_url,
     parse_env_example,
+    parse_env_file,
+    resolve_env_dir,
 )
+from .users_store import get_user
 from .executor import clone_repo, run_in_workspace
 from .healing import apply_rule, classify_errors, extract_app_url, find_free_port
 from .workspace import run_dir
@@ -56,18 +67,39 @@ def _merge_env(run_id: str, updates: dict[str, str]) -> None:
 
 
 def _cmd_with_env(run_id: str, command: str, cwd: Path) -> str:
-    chunks = []
+    chunks: list[str] = []
+    docker_cmd = is_docker_command(command)
+    if not docker_cmd:
+        env_path = env_file_path(cwd)
+        if not env_path.is_file() and (cwd / ".env").is_file():
+            env_path = cwd / ".env"
+        if env_path.is_file():
+            chunks.extend(env_export_statements(parse_env_file(env_path)))
     for k, v in _run_env(run_id).items():
-        chunks.append(f'export {k}="{v}"')
-    if (cwd / ".env").exists():
-        chunks.append("set -a && source .env && set +a")
+        if docker_cmd and k not in ("PORT", "HOSTNAME"):
+            continue
+        escaped = v.replace("\\", "\\\\").replace('"', '\\"')
+        chunks.append(f'export {k}="{escaped}"')
     chunks.append(command)
     return " && ".join(chunks)
 
 
+def _step_timeout(command: str | None) -> int:
+    if command and "docker compose build" in command:
+        return int(os.getenv("FORGE_DOCKER_BUILD_TIMEOUT", "1200"))
+    if command and is_docker_command(command):
+        return int(os.getenv("FORGE_DOCKER_TIMEOUT", "600"))
+    return int(os.getenv("FORGE_CMD_TIMEOUT", "120"))
+
+
 async def _run_step(run_id: str, cwd: Path, command: str, timeout: int | None = None) -> dict[str, Any]:
     wrapped = _cmd_with_env(run_id, command, cwd)
-    result = await asyncio.to_thread(run_in_workspace, cwd, wrapped, timeout)
+    result = await asyncio.to_thread(
+        run_in_workspace,
+        cwd,
+        wrapped,
+        timeout if timeout is not None else _step_timeout(command),
+    )
     store.log_event(run_id, "command", result)
     return result
 
@@ -77,9 +109,22 @@ async def _verify_url(url: str) -> bool:
         try:
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=8) as resp:
-                return resp.status < 500
+                if resp.status >= 500:
+                    return False
+                body = resp.read(8000).decode("utf-8", errors="replace")
+                if "Invalid environment variables" in body:
+                    return False
+                return True
         except urllib.error.HTTPError as exc:
-            return exc.code < 500
+            if exc.code >= 500:
+                return False
+            try:
+                body = exc.read(8000).decode("utf-8", errors="replace")
+                if "Invalid environment variables" in body:
+                    return False
+            except Exception:
+                pass
+            return True
         except Exception:
             return False
 
@@ -153,10 +198,12 @@ async def _probe_server(run_id: str, cwd: Path, command: str) -> dict[str, Any]:
     return result
 
 
-def _write_env_file(cwd: Path, values: dict[str, str]) -> None:
-    target = cwd / ".env"
-    lines = [f"{k}={v}" for k, v in values.items()]
+def _write_env_file(cwd: Path, values: dict[str, str]) -> Path:
+    target = env_file_path(cwd)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lines = [format_env_line(k, v) for k, v in values.items()]
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return target
 
 
 async def _write_env_from_approval(run_id: str, cwd: Path) -> dict[str, Any]:
@@ -164,18 +211,29 @@ async def _write_env_from_approval(run_id: str, cwd: Path) -> dict[str, Any]:
     if not approval:
         return {"error": "No approved env request"}
     values = approval.get("values") or {}
-    _write_env_file(cwd, values)
-    store.log_event(run_id, "env_written", {"keys": list(values.keys())})
-    return {"written": True, "keys": list(values.keys())}
+    target = _write_env_file(cwd, values)
+    store.log_event(run_id, "env_written", {"keys": list(values.keys()), "path": str(target.relative_to(cwd))})
+    return {"written": True, "keys": list(values.keys()), "path": str(target.relative_to(cwd))}
 
 
-async def _auto_env_from_example(run_id: str, cwd: Path) -> dict[str, Any] | None:
-    defaults = parse_env_example(cwd)
-    if not defaults or (cwd / ".env").exists():
+def _bootstrap_user(user_id: str | None) -> dict | None:
+    if not user_id or user_id == "operator":
         return None
-    _write_env_file(cwd, defaults)
-    store.log_event(run_id, "env_auto", {"keys": list(defaults.keys()), "source": ".env.example"})
-    return {"written": True, "keys": list(defaults.keys()), "auto": True}
+    return get_user(user_id)
+
+
+async def _auto_env_from_example(run_id: str, cwd: Path, *, user_id: str | None = None) -> dict[str, Any] | None:
+    target = env_file_path(cwd)
+    if target.is_file():
+        return None
+    user = _bootstrap_user(user_id)
+    defaults = build_env_defaults(cwd, user=user)
+    if not defaults:
+        return None
+    written = _write_env_file(cwd, defaults)
+    rel = written.relative_to(cwd)
+    store.log_event(run_id, "env_auto", {"keys": list(defaults.keys()), "path": str(rel)})
+    return {"written": True, "keys": list(defaults.keys()), "auto": True, "path": str(rel)}
 
 
 def _mark_success(run_id: str, url: str, summary: str) -> None:
@@ -189,6 +247,23 @@ def _mark_success(run_id: str, url: str, summary: str) -> None:
     store.log_event(run_id, "success", {"url": url, "summary": summary})
 
 
+async def _apply_fix(
+    run_id: str,
+    cwd: Path,
+    fix: Any,
+) -> AsyncIterator[dict[str, Any]]:
+    yield _agent_event(text=fix.description)
+    if fix.env_updates:
+        _merge_env(run_id, fix.env_updates)
+        yield _agent_event(response=("apply_env", fix.env_updates))
+    for cmd in fix.commands:
+        yield _agent_event(call=("run_command", {"command": cmd}))
+        step = await _run_step(run_id, cwd, cmd)
+        yield _agent_event(response=("run_command", step))
+        if not step.get("success"):
+            return
+
+
 async def _heal_loop(
     run_id: str,
     cwd: Path,
@@ -196,6 +271,7 @@ async def _heal_loop(
     run_cmd: str,
     *,
     web: bool,
+    user_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     while not store.iteration_limit_reached(run_id):
         yield _agent_event(call=("run_command", {"command": run_cmd}))
@@ -208,6 +284,8 @@ async def _heal_loop(
         yield _agent_event(response=("run_command", result))
 
         url = result.get("app_url")
+        if not url and result.get("success") and is_docker_command(run_cmd):
+            url = compose_http_url(cwd)
         if url and await _verify_url(url):
             _mark_success(run_id, url, "Web app responding")
             yield _agent_event(text=f"App running at {url}")
@@ -235,8 +313,16 @@ async def _heal_loop(
             yield _agent_event(text=f"No rule fix for: {err.description}")
             return
 
+        if fix.fatal_message:
+            store.update_run(run_id, status="failed", error=fix.fatal_message)
+            yield _agent_event(text=fix.fatal_message)
+            return
+
+        if fix.stack_override:
+            stack = fix.stack_override
+
         if fix.next_step == "need_env":
-            auto = await _auto_env_from_example(run_id, cwd)
+            auto = await _auto_env_from_example(run_id, cwd, user_id=user_id)
             if auto:
                 yield _agent_event(text="Auto-filled .env from .env.example")
                 yield _agent_event(response=("write_env_file", auto))
@@ -253,17 +339,12 @@ async def _heal_loop(
             yield _agent_event(response=("request_env_write", approval))
             return
 
-        yield _agent_event(text=fix.description)
-        if fix.env_updates:
-            _merge_env(run_id, fix.env_updates)
-            yield _agent_event(response=("apply_env", fix.env_updates))
+        async for ev in _apply_fix(run_id, cwd, fix):
+            yield ev
 
-        for cmd in fix.commands:
-            yield _agent_event(call=("run_command", {"command": cmd}))
-            step = await _run_step(run_id, cwd, cmd)
-            yield _agent_event(response=("run_command", step))
-            if not step.get("success"):
-                break
+        if fix.run_command:
+            run_cmd = fix.run_command
+            continue
 
     store.update_run(run_id, status="failed", error="Iteration limit reached")
     yield _agent_event(text="Healing iteration limit reached.")
@@ -276,6 +357,7 @@ async def stream_forge(
     start_command: str | None = None,
     *,
     resume: bool = False,
+    user_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     url = normalize_repo_url(repo_url)
     cwd = run_dir(run_id)
@@ -297,6 +379,9 @@ async def stream_forge(
 
     yield _agent_event(text="Detecting stack and commands…")
     stack = detect_stack(cwd)
+    stack, host_note = adjust_stack_for_host(cwd, stack)
+    if host_note:
+        yield _agent_event(text=host_note)
     cmds = discover_commands(cwd, stack, start_command)
     web = is_web_project(cwd, stack, cmds)
     yield _agent_event(
@@ -322,12 +407,12 @@ async def stream_forge(
             return
 
     if not resume:
-        auto = await _auto_env_from_example(run_id, cwd)
+        auto = await _auto_env_from_example(run_id, cwd, user_id=user_id)
         if auto:
             yield _agent_event(text=f"Auto-filled .env from example: {', '.join(auto['keys'])}")
             yield _agent_event(response=("write_env_file", auto))
-        elif detect_env_keys(cwd) and not (cwd / ".env").exists():
-            defaults = parse_env_example(cwd)
+        elif detect_env_keys(cwd) and not env_file_path(cwd).is_file():
+            defaults = build_env_defaults(cwd, user=_bootstrap_user(user_id))
             if defaults:
                 approval = store.create_approval(run_id, list(defaults.keys()))
                 store.update_run(run_id, status="awaiting_env")
@@ -353,24 +438,53 @@ async def stream_forge(
         return
 
     if cmds.install:
-        yield _agent_event(call=("run_command", {"command": cmds.install}))
-        install = await _run_step(run_id, cwd, cmds.install, timeout=300)
-        yield _agent_event(response=("run_command", install))
-        if not install.get("success"):
+        install_cmd = cmds.install
+        install_ok = False
+        while not store.iteration_limit_reached(run_id):
+            yield _agent_event(call=("run_command", {"command": install_cmd}))
+            install = await _run_step(run_id, cwd, install_cmd)
+            yield _agent_event(response=("run_command", install))
+            if install.get("success"):
+                install_ok = True
+                break
             err = (install.get("stderr") or install.get("stdout") or "Install failed").strip()
-            if "pnpm: command not found" in err and "npx" not in (cmds.install or ""):
-                retry = (cmds.install or "").replace("pnpm", "npx --yes pnpm")
-                if retry != cmds.install:
+            if "pnpm: command not found" in err and "npx" not in (install_cmd or ""):
+                retry = (install_cmd or "").replace("pnpm", "npx --yes pnpm")
+                if retry != install_cmd:
                     yield _agent_event(text="pnpm not on PATH — retrying with npx pnpm")
-                    yield _agent_event(call=("run_command", {"command": retry}))
-                    install = await _run_step(run_id, cwd, retry, timeout=300)
-                    yield _agent_event(response=("run_command", install))
-            if not install.get("success"):
-                store.update_run(run_id, status="failed", error=err[:500])
-                yield _agent_event(text="Install failed.")
+                    install_cmd = retry
+                    continue
+            errors = classify_errors(install.get("stderr", ""), install.get("stdout", ""), stack.runtime)
+            if not errors:
+                break
+            fix = apply_rule(errors[0], stack, cwd)
+            store.increment_iteration(run_id)
+            store.update_run(run_id, status="healing")
+            if not fix:
+                break
+            if fix.fatal_message:
+                store.update_run(run_id, status="failed", error=fix.fatal_message)
+                yield _agent_event(text=fix.fatal_message)
                 return
+            if fix.stack_override:
+                stack = fix.stack_override
+                cmds = discover_commands(cwd, stack, start_command)
+            async for ev in _apply_fix(run_id, cwd, fix):
+                yield ev
+            if fix.commands:
+                install_ok = True
+                break
+            if cmds.install and cmds.install != install_cmd:
+                install_cmd = cmds.install
+                continue
+            break
+        if not install_ok:
+            err = (install.get("stderr") or install.get("stdout") or "Install failed").strip()
+            store.update_run(run_id, status="failed", error=err[:500])
+            yield _agent_event(text="Install failed.")
+            return
 
-    if cmds.build and web and not (cmds.run and " dev" in f" {cmds.run}"):
+    if cmds.build and web and not is_dev_run_command(cmds.run):
         yield _agent_event(call=("run_command", {"command": cmds.build}))
         build = await _run_step(run_id, cwd, cmds.build, timeout=300)
         yield _agent_event(response=("run_command", build))
@@ -389,7 +503,7 @@ async def stream_forge(
         yield _agent_event(text="Could not discover a run command.")
         return
 
-    async for ev in _heal_loop(run_id, cwd, stack, run_cmd, web=web):
+    async for ev in _heal_loop(run_id, cwd, stack, run_cmd, web=web, user_id=user_id):
         yield ev
 
     _RUN_ENV.pop(run_id, None)

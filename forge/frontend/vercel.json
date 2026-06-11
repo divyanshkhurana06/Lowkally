@@ -1,0 +1,11 @@
+{
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/forge/stream/route.ts": {
+      "maxDuration": 300
+    },
+    "src/app/api/runs/[runId]/continue/stream/route.ts": {
+      "maxDuration": 300
+    }
+  }
+}

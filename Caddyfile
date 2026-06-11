@@ -1,0 +1,12 @@
+{
+	email {$ACME_EMAIL:admin@example.com}
+}
+
+{$APP_HOST:localhost} {
+	handle /api/* {
+		reverse_proxy forge-agent:8080
+	}
+	handle {
+		reverse_proxy forge-ui:3000
+	}
+}
