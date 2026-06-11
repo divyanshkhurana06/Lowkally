@@ -4,19 +4,9 @@
 
 Autonomous repository bootstrap agent — paste a git URL, get a running app.
 
-**Google Cloud Rapid Agent Hackathon** · **GitLab track** · Gemini ADK + GitLab MCP on Cloud Run
-
-| | |
-|--|--|
-| **Live demo** | https://lowkally-ui-ksy3havi2a-uc.a.run.app |
-| **Source** | https://github.com/divyanshkhurana06/Lowkally |
-| **License** | [MIT](LICENSE) |
+**Live demo:** https://lowkally-ui-ksy3havi2a-uc.a.run.app · **Repo:** https://github.com/divyanshkhurana06/Lowkally · **License:** [MIT](LICENSE)
 
 Clone · detect stack · install · run · heal
-
-## Hackathon submission
-
-See **[HACKATHON.md](HACKATHON.md)** for Devpost checklist, demo video script, and how we meet each requirement (Gemini ADK, GitLab MCP, multi-step agent, hosted URL).
 
 ## Run locally
 
