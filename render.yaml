@@ -1,6 +1,5 @@
-# Render Blueprint — deploy Lowkally (agent + UI) with one click.
-# Dashboard: New → Blueprint → connect this repo.
-# After deploy: set OAuth callback URLs to https://<lowkally-ui-host>/api/auth/.../callback
+# Render Blueprint — FREE tier (no paid plan). Card may still be required for verification only.
+# Prefer Vercel + Cloud Run for hackathon: see scripts/deploy-vercel-gcp.sh
 
 services:
   - type: web
@@ -8,7 +7,7 @@ services:
     runtime: docker
     dockerfilePath: forge/agent/Dockerfile
     dockerContext: forge
-    plan: starter
+    plan: free
     healthCheckPath: /health
     envVars:
       - key: PORT
@@ -47,17 +46,13 @@ services:
         value: https://github.com/divyanshkhurana06/Lowkally/issues
       - key: GITHUB_ISSUES_TOKEN
         sync: false
-    disk:
-      name: lowkally-data
-      mountPath: /data
-      sizeGB: 10
 
   - type: web
     name: lowkally-ui
     runtime: docker
     dockerfilePath: forge/frontend/Dockerfile
     dockerContext: forge/frontend
-    plan: starter
+    plan: free
     envVars:
       - key: API_URL
         fromService:

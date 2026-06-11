@@ -52,7 +52,13 @@ from forge.users_store import (
     upsert_user,
 )
 
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+_here = Path(__file__).resolve()
+for _depth in (2, 1):
+    if len(_here.parents) > _depth:
+        _env_file = _here.parents[_depth] / ".env"
+        if _env_file.is_file():
+            load_dotenv(_env_file)
+            break
 load_dotenv()
 
 runner: InMemoryRunner | None = None

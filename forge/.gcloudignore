@@ -1,0 +1,12 @@
+.gcloudignore
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/node_modules
+**/.next
+frontend/
+workspace/
+data/
+deploy/hf-space/

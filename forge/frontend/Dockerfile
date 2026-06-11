@@ -5,8 +5,11 @@ RUN npm ci 2>/dev/null || npm install
 
 FROM node:20-slim AS builder
 WORKDIR /app
+ARG API_URL=http://127.0.0.1:8080
+ENV API_URL=$API_URL
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+RUN mkdir -p public
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

@@ -1,0 +1,8 @@
+/Users/divyanshkhurana/Downloads/google cloud rapid agents/.venv/lib/python3.12/site-packages/google/adk/features/_feature_decorator.py:72: UserWarning: [EXPERIMENTAL] feature FeatureName.PLUGGABLE_AUTH is enabled.
+  check_feature_enabled()
+INFO:     Started server process [21658]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:65506 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65515 - "GET /health HTTP/1.1" 200 OK
