@@ -35,7 +35,7 @@ from .detection import (
 )
 from .users_store import get_user
 from .executor import clone_repo, run_in_workspace
-from .healing import apply_rule, classify_errors, extract_app_url, find_free_port
+from .healing import apply_rule, classify_errors, extract_app_url, find_free_port, reserve_port
 from .workspace import run_dir
 
 SERVER_PROBE_SECONDS = int(os.getenv("FORGE_SERVER_PROBE", "180"))
@@ -64,6 +64,18 @@ def _run_env(run_id: str) -> dict[str, str]:
 
 def _merge_env(run_id: str, updates: dict[str, str]) -> None:
     _run_env(run_id).update(updates)
+    port = updates.get("PORT")
+    if port and str(port).isdigit():
+        reserve_port(int(port))
+
+
+def _ports_in_use() -> set[int]:
+    ports: set[int] = set()
+    for env in _RUN_ENV.values():
+        p = env.get("PORT")
+        if p and str(p).isdigit():
+            ports.add(int(p))
+    return ports
 
 
 def _cmd_with_env(run_id: str, command: str, cwd: Path) -> str:
@@ -432,7 +444,7 @@ async def stream_forge(
                 return
 
     store.update_run(run_id, status="active")
-    port = find_free_port()
+    port = find_free_port(exclude=_ports_in_use())
     _merge_env(run_id, {"PORT": str(port), "HOSTNAME": "127.0.0.1"})
 
     if not cmds.run and not cmds.install:

@@ -51,28 +51,39 @@ class FixAction:
 
 
 def _port_free(port: int) -> bool:
-    """Check IPv4 and IPv6 — Next.js often binds on ::."""
-    for family, addr in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+    """Check all interfaces — Next.js often binds on :: and dual-stack hosts differ."""
+    for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
         try:
             with socket.socket(family, socket.SOCK_STREAM) as sock:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                if family == socket.AF_INET6:
-                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
                 sock.bind((addr, port))
         except OSError:
             return False
     return True
 
 
-def find_free_port(start: int | None = None) -> int:
+_ALLOCATED_PORTS: set[int] = set()
+
+
+def reserve_port(port: int) -> None:
+    _ALLOCATED_PORTS.add(int(port))
+
+
+def find_free_port(start: int | None = None, exclude: set[int] | None = None) -> int:
     import os
 
+    skip = set(exclude or ()) | _ALLOCATED_PORTS
     default = int(os.getenv("LOWKALLY_PORT_START", "3010"))
     base = default if start is None else max(start, default)
-    for port in range(base, base + 100):
+    for port in range(base, base + 200):
+        if port in skip:
+            continue
         if _port_free(port):
+            _ALLOCATED_PORTS.add(port)
             return port
-    return base + 100
+    fallback = base + 200
+    _ALLOCATED_PORTS.add(fallback)
+    return fallback
 
 
 def extract_app_url(output: str) -> str | None:
@@ -254,9 +265,11 @@ def apply_rule(error: ClassifiedError, stack: StackInfo, root: Path) -> FixActio
             return FixAction(description=f"Install missing Python package {name}", commands=[cmd], next_step="rerun")
 
     if error.error_type == "port_conflict":
-        port = find_free_port()
+        busy = error.extracted.get("port")
+        start = int(busy) + 1 if busy else None
+        port = find_free_port(start=start, exclude={int(busy)} if busy else None)
         return FixAction(
-            description=f"Switch to port {port}",
+            description=f"Port {busy or '?'} in use — switching to {port}",
             env_updates={"PORT": str(port), "VITE_PORT": str(port), "NEXT_PUBLIC_PORT": str(port)},
             next_step="rerun",
         )

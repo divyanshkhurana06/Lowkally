@@ -24,7 +24,7 @@ ENV_VARS+=",FORGE_WORKSPACE=/data/workspace"
 ENV_VARS+=",FORGE_DATA_DIR=/data/db"
 # Keep ADK + GitLab MCP visible for hackathon judges; pipeline fallback if ADK times out or quota hits.
 ENV_VARS+=",FORGE_BUILD_TIMEOUT=600"
-ENV_VARS+=",FORGE_MAX_ITERATIONS=3"
+ENV_VARS+=",FORGE_MAX_ITERATIONS=8"
 ENV_VARS+=",FORGE_ADK_TIMEOUT=60"
 ENV_VARS+=",NODE_OPTIONS=--max-old-space-size=3072"
 ENV_VARS+=",GITLAB_API_URL=${GITLAB_API_URL:-https://gitlab.com/api/v4}"
