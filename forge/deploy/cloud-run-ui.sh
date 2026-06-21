@@ -11,7 +11,7 @@ IMAGE="gcr.io/${PROJECT}/${SERVICE}"
 cd "$ROOT/forge/frontend"
 gcloud builds submit . \
   --config="$ROOT/forge/deploy/cloudbuild-ui.yaml" \
-  --substitutions="_IMAGE=$IMAGE,_API_URL=$AGENT_URL"
+  --substitutions="_IMAGE=$IMAGE,_API_URL=$AGENT_URL,_NEXT_PUBLIC_AGENT_URL=$AGENT_URL"
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --region "$REGION" \

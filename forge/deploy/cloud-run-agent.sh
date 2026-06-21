@@ -41,6 +41,8 @@ ENV_VARS+=",GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET:-}"
 ENV_VARS+=",GITLAB_PERSONAL_ACCESS_TOKEN=${GITLAB_PERSONAL_ACCESS_TOKEN:-}"
 ENV_VARS+=",GITHUB_ISSUES_TOKEN=${GITHUB_ISSUES_TOKEN:-}"
 ENV_VARS+=",GITLAB_OAUTH_SCOPES=${GITLAB_OAUTH_SCOPES:-read_user read_api}"
+EXISTING_AGENT_URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)' 2>/dev/null || true)"
+ENV_VARS+=",AGENT_PUBLIC_URL=${AGENT_PUBLIC_URL:-${EXISTING_AGENT_URL:-https://lowkally-agent-ksy3havi2a-uc.a.run.app}}"
 
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
@@ -51,6 +53,7 @@ gcloud run deploy "$SERVICE" \
   --timeout 900 \
   --cpu 2 \
   --max-instances 1 \
+  --min-instances 1 \
   --no-cpu-throttling \
   --set-env-vars "$ENV_VARS"
 

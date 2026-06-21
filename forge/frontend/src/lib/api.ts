@@ -36,6 +36,7 @@ export type Setup = {
   max_iterations: number;
   ready: boolean;
   app_url?: string;
+  agent_public_url?: string;
   oauth?: { google: boolean; github: boolean; gitlab: boolean };
   issues_url?: string;
   hackathon: {
@@ -164,6 +165,73 @@ export type Run = {
   finished_at?: string;
 };
 
+export type RunGuide = {
+  headline: string;
+  showing: string[];
+  missing: string[];
+  local_steps: { title: string; commands: string[]; note?: string }[];
+  repo_url?: string;
+  partial_preview?: boolean;
+  stack?: { runtime: string; framework: string };
+};
+
+export function runGuideFromEvents(
+  events: { kind: string; payload?: Record<string, unknown> }[],
+): RunGuide | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const p = events[i].payload;
+    if (events[i].kind === "run_guide" && p && typeof p.headline === "string") {
+      return p as unknown as RunGuide;
+    }
+  }
+  return null;
+}
+
+function isLocalHost(): boolean {
+  if (typeof window === "undefined") return false;
+  const h = window.location.hostname;
+  return h === "localhost" || h === "127.0.0.1";
+}
+
+/** Local dev: direct localhost. Cloud: open preview on the agent (most reliable). */
+export function resolvePreviewUrl(
+  runId: string | null | undefined,
+  successUrl: string | undefined,
+  agentPublicUrl?: string,
+): string | null {
+  if (!successUrl) return null;
+  if (successUrl.startsWith("cli://") || successUrl.startsWith("install://")) {
+    return null;
+  }
+  const isLocalApp =
+    successUrl.includes("localhost") || successUrl.includes("127.0.0.1");
+  if (isLocalHost() && isLocalApp) {
+    return successUrl;
+  }
+  if (runId && isLocalApp) {
+    const agent = (
+      agentPublicUrl ||
+      process.env.NEXT_PUBLIC_AGENT_URL ||
+      ""
+    ).replace(/\/$/, "");
+    if (agent) {
+      return `${agent}/api/runs/${runId}/preview/`;
+    }
+    return `/api/runs/${runId}/preview/`;
+  }
+  if (successUrl.includes("/preview")) {
+    if (successUrl.startsWith("http")) {
+      try {
+        return new URL(successUrl).pathname;
+      } catch {
+        return successUrl;
+      }
+    }
+    return successUrl;
+  }
+  return successUrl.startsWith("http") ? successUrl : null;
+}
+
 export type Approval = {
   id: string;
   run_id: string;
@@ -187,9 +255,9 @@ const creds: RequestInit = { credentials: "include" };
 export function parseApiError(status: number, raw: string): string {
   const trimmed = raw.trim();
   if (status === 401) return "Please log in and try again.";
-  if (status === 404) return "Agent API not found — restart with: bash scripts/start.sh";
+  if (status === 404) return "Agent API not found — refresh the page and try again.";
   if (status === 0 || trimmed === "Failed to fetch") {
-    return "Cannot reach the agent — run: bash scripts/start.sh";
+    return "Cannot reach the Lowkally agent — refresh the page or try again in a moment.";
   }
   try {
     const data = JSON.parse(trimmed) as { detail?: unknown };

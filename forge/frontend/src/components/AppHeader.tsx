@@ -21,14 +21,29 @@ export function AppHeader() {
   const [issueOpen, setIssueOpen] = useState(false);
   const [reportSeed, setReportSeed] = useState<ReportSeed | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [authOAuth, setAuthOAuth] = useState<{
+    google?: boolean;
+    github?: boolean;
+    gitlab?: boolean;
+  } | null>(null);
+  const [ready, setReady] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const [s, auth] = await Promise.all([getSetup(), getAuthMe()]);
-      setSetup(s);
+      const auth = await getAuthMe();
       setUser(auth.user);
+      setAuthOAuth(auth.oauth);
     } catch {
-      /* offline */
+      setUser(null);
+      setAuthOAuth(null);
+    }
+    try {
+      const s = await getSetup();
+      setSetup(s);
+    } catch {
+      setSetup(null);
+    } finally {
+      setReady(true);
     }
   }, []);
 
@@ -53,7 +68,7 @@ export function AppHeader() {
     refresh();
   };
 
-  const oauth = setup?.oauth;
+  const oauth = setup?.oauth ?? authOAuth ?? undefined;
   const showLogin = oauth?.google || oauth?.github || oauth?.gitlab;
 
   return (
@@ -110,6 +125,8 @@ export function AppHeader() {
                 </div>
               )}
             </div>
+          ) : !ready ? (
+            <span className="hint">Connecting…</span>
           ) : showLogin ? (
             <div className="login-btns">
               {oauth?.google && (
@@ -129,7 +146,7 @@ export function AppHeader() {
               )}
             </div>
           ) : (
-            <span className="hint">dev mode</span>
+            <span className="hint">Login unavailable</span>
           )}
         </div>
       </header>

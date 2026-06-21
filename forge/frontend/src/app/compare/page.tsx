@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { getSavedSites, type SavedSite } from "@/lib/api";
+import { getSavedSites, type SavedSite, resolvePreviewUrl } from "@/lib/api";
 
 function CompareInner() {
   const params = useSearchParams();
@@ -30,8 +30,7 @@ function CompareInner() {
 
   const frameUrl = (site: SavedSite | undefined) => {
     if (!site) return "";
-    if (site.success_url?.startsWith("http")) return site.success_url;
-    return "";
+    return resolvePreviewUrl(site.run_id, site.success_url) || "";
   };
 
   return (

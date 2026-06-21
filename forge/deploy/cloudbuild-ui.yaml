@@ -4,6 +4,8 @@ steps:
       - build
       - --build-arg
       - API_URL=$_API_URL
+      - --build-arg
+      - NEXT_PUBLIC_AGENT_URL=$_NEXT_PUBLIC_AGENT_URL
       - -t
       - $_IMAGE
       - .

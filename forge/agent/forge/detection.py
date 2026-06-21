@@ -777,6 +777,9 @@ def _tailor_run_command(run: str | None, stack: StackInfo, root: Path) -> str | 
             return f"{run} -- -p $PORT -H 127.0.0.1"
     if fw == "vite" and " run dev" in f" {run}":
         return run
+    if fw in ("vite", "react") and " run preview" in f" {run}":
+        if "--port" not in run and "-p " not in run:
+            return f"{run} -- --host 127.0.0.1 --port $PORT"
     return run
 
 

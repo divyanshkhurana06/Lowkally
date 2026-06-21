@@ -9,10 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from google.adk.runners import InMemoryRunner
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -37,6 +38,8 @@ from forge.gitlab_client import list_projects, verify_token
 from forge.issue_notify import create_github_issue
 from forge.detection import normalize_repo_url
 from forge.hybrid import stream_hybrid_run
+from forge.pipeline import emit_run_guide
+from forge.preview import build_upstream_url, proxy_response_headers, rewrite_preview_body
 from forge.store import get_run, list_events, list_pending_approvals, resolve_approval, update_run
 from forge.user_repos import list_repos_for_user
 from forge.users_store import (
@@ -161,6 +164,10 @@ def _setup() -> dict[str, Any]:
         "max_iterations": int(os.getenv("FORGE_MAX_ITERATIONS", "10")),
         "ready": True,
         "app_url": APP_URL,
+        "agent_public_url": os.getenv(
+            "AGENT_PUBLIC_URL",
+            "https://lowkally-agent-ksy3havi2a-uc.a.run.app",
+        ).rstrip("/"),
         "oauth": oauth_configured(),
         "issues_url": os.getenv("GITHUB_ISSUES_URL"),
         "hackathon": {
@@ -347,6 +354,52 @@ def run_detail(request: Request, run_id: str) -> dict[str, Any]:
     return {"run": run, "events": list_events(run_id)}
 
 
+@app.api_route(
+    "/api/runs/{run_id}/preview",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+@app.api_route(
+    "/api/runs/{run_id}/preview/{path:path}",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def run_preview(request: Request, run_id: str, path: str = ""):
+    """Proxy to the app Lowkally started (agent-local port), not the user's machine."""
+    run = get_run(run_id)
+    if not run or run.get("status") != "running":
+        raise HTTPException(404, "Preview not available — the run may have ended. Start a new run.")
+    # Running previews are scoped by unguessable run_id; allow GET/HEAD without login
+    # so _next/static assets load in new tabs (session cookies are not always forwarded).
+    if request.method not in ("GET", "HEAD"):
+        _check_run_access(request, run_id)
+    target = build_upstream_url(run_id, path, request.url.query)
+    if not target:
+        raise HTTPException(404, "No active preview for this run. Re-run the repository.")
+    skip = {"host", "cookie", "content-length", "connection"}
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
+    body = await request.body()
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        upstream = await client.request(
+            request.method,
+            target,
+            headers=headers,
+            content=body if body else None,
+            follow_redirects=True,
+        )
+
+    content_type = upstream.headers.get("content-type", "")
+    content = rewrite_preview_body(upstream.content, content_type, run_id)
+    out_headers = proxy_response_headers(upstream.headers, run_id)
+    out_headers.pop("content-length", None)
+    out_headers.pop("Content-Length", None)
+
+    return Response(
+        content=content,
+        status_code=upstream.status_code,
+        headers=out_headers,
+        media_type=content_type.split(";")[0] if content_type else None,
+    )
+
+
 @app.get("/api/approvals")
 def approvals(run_id: str | None = None) -> dict[str, Any]:
     pending = list_pending_approvals(run_id)
@@ -389,8 +442,14 @@ async def forge_stream(request: Request, req: ForgeRequest) -> EventSourceRespon
             ):
                 if event.get("type") == "repo_insight":
                     yield {"event": "insight", "data": json.dumps(event)}
+                elif event.get("type") == "run_guide":
+                    yield {"event": "run_guide", "data": json.dumps(event.get("guide") or {})}
                 else:
                     yield {"event": "agent", "data": json.dumps(event)}
+
+            guide = emit_run_guide(run_id)
+            if guide:
+                yield {"event": "run_guide", "data": json.dumps(guide)}
 
             final = get_run(run_id)
             pending = list_pending_approvals(run_id)
@@ -427,8 +486,14 @@ async def continue_stream(request: Request, run_id: str, req: ContinueRequest) -
             ):
                 if event.get("type") == "repo_insight":
                     yield {"event": "insight", "data": json.dumps(event)}
+                elif event.get("type") == "run_guide":
+                    yield {"event": "run_guide", "data": json.dumps(event.get("guide") or {})}
                 else:
                     yield {"event": "agent", "data": json.dumps(event)}
+
+            guide = emit_run_guide(run_id)
+            if guide:
+                yield {"event": "run_guide", "data": json.dumps(guide)}
 
             final = get_run(run_id)
             pending = list_pending_approvals(run_id)

@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     return new Response(
-      JSON.stringify({ error: `Agent unreachable at ${API}. Run: bash scripts/start.sh` }),
+      JSON.stringify({ error: `Agent unreachable. Refresh the page and try again.` }),
       { status: 503, headers: { "Content-Type": "application/json" } },
     );
   }

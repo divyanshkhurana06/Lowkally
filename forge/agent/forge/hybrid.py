@@ -12,10 +12,11 @@ from google.genai import types
 
 from .gitlab_client import parse_gitlab_url
 from .mcp_discover import stream_gitlab_discover
-from .pipeline import stream_forge
+from .pipeline import emit_run_guide, stream_forge, _stash_run_ctx
 from .repo_insight import generate_repo_insight_async
 from .store import get_run, log_event, update_run
 from .tools import set_active_run
+from .workspace import run_dir
 
 
 def _is_quota_error(exc: BaseException) -> bool:
@@ -144,6 +145,7 @@ async def stream_hybrid_run(
     """Gemini ADK + GitLab MCP primary; deterministic pipeline on quota failure."""
     set_active_run(run_id)
     update_run(run_id, status="active")
+    _stash_run_ctx(run_id, repo_url=repo_url, cwd=run_dir(run_id))
 
     insight_task: asyncio.Task | None = None
     insight_sent = False
@@ -221,6 +223,9 @@ async def stream_hybrid_run(
                         yield ev
             run_row = get_run(run_id) or {}
             if run_row.get("success_url"):
+                guide = emit_run_guide(run_id)
+                if guide:
+                    yield {"type": "run_guide", "guide": guide}
                 return
         except TimeoutError:
             adk_error = "Gemini ADK timed out — using fast pipeline"
@@ -237,6 +242,9 @@ async def stream_hybrid_run(
         else:
             run_row = get_run(run_id) or {}
             if run_row.get("success_url") or run_row.get("status") in ("running", "completed"):
+                guide = emit_run_guide(run_id)
+                if guide:
+                    yield {"type": "run_guide", "guide": guide}
                 return
 
     yield {

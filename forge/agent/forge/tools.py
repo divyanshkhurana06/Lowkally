@@ -21,6 +21,7 @@ from .detection import (
 )
 from .executor import clone_repo, run_in_workspace
 from .gitlab_client import parse_gitlab_url
+from .preview import register_preview_port, resolve_success_url
 from .workspace import resolve_file, run_dir
 
 _active_run: str | None = None
@@ -213,14 +214,20 @@ def write_env_file(approval_id: str) -> dict[str, Any]:
 def mark_run_success(local_url: str, summary: str) -> dict[str, Any]:
     """Call when the app runs cleanly. Records the URL and completes the run."""
     run_id = _require_run()
+    register_preview_port(run_id, local_url)
+    public_url = resolve_success_url(run_id, local_url)
     store.update_run(
         run_id,
         status="running",
-        success_url=local_url,
+        success_url=public_url,
         finished_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     )
-    store.log_event(run_id, "success", {"url": local_url, "summary": summary})
-    return {"run_id": run_id, "status": "running", "url": local_url}
+    store.log_event(
+        run_id,
+        "success",
+        {"url": public_url, "internal_url": local_url, "summary": summary},
+    )
+    return {"run_id": run_id, "status": "running", "url": public_url}
 
 
 def get_run_status() -> dict[str, Any]:

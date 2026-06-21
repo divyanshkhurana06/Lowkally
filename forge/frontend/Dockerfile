@@ -6,7 +6,9 @@ RUN npm ci 2>/dev/null || npm install
 FROM node:20-slim AS builder
 WORKDIR /app
 ARG API_URL=http://127.0.0.1:8080
+ARG NEXT_PUBLIC_AGENT_URL=
 ENV API_URL=$API_URL
+ENV NEXT_PUBLIC_AGENT_URL=$NEXT_PUBLIC_AGENT_URL
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN mkdir -p public

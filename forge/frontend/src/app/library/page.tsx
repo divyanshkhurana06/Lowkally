@@ -5,7 +5,9 @@ import { useCallback, useEffect, useState } from "react";
 import {
   deleteSaved,
   getSavedSites,
+  getSetup,
   normalizeInsightLabels,
+  resolvePreviewUrl,
   toggleFavorite,
   type SavedSite,
 } from "@/lib/api";
@@ -14,6 +16,7 @@ export default function LibraryPage() {
   const [sites, setSites] = useState<SavedSite[]>([]);
   const [favOnly, setFavOnly] = useState(false);
   const [error, setError] = useState("");
+  const [agentUrl, setAgentUrl] = useState<string | undefined>();
 
   const load = useCallback(async () => {
     try {
@@ -24,9 +27,15 @@ export default function LibraryPage() {
       const msg = e instanceof Error ? e.message : "Failed to load";
       setError(
         msg.includes("404")
-          ? "Agent API outdated — run: bash scripts/start.sh"
+          ? "Agent API outdated — refresh the page"
           : msg,
       );
+    }
+    try {
+      const s = await getSetup();
+      setAgentUrl(s.agent_public_url);
+    } catch {
+      /* optional */
     }
   }, [favOnly]);
 
@@ -45,8 +54,9 @@ export default function LibraryPage() {
   };
 
   const openSite = (site: SavedSite) => {
-    if (site.success_url?.startsWith("http")) {
-      window.open(site.success_url, "_blank");
+    const url = resolvePreviewUrl(site.run_id, site.success_url, agentUrl);
+    if (url) {
+      window.open(url, "_blank");
       return;
     }
     window.location.href = `/?repo=${encodeURIComponent(site.repo_url)}`;

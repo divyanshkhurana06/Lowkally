@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -15,6 +16,7 @@ from typing import Any
 
 from . import store
 from .detection import (
+    CommandSet,
     StackInfo,
     adjust_stack_for_host,
     build_env_defaults,
@@ -32,15 +34,123 @@ from .detection import (
     parse_env_example,
     parse_env_file,
     resolve_env_dir,
+    resolve_pm_cmd,
 )
 from .users_store import get_user
 from .executor import clone_repo, run_in_workspace
 from .healing import apply_rule, classify_errors, extract_app_url, find_free_port, reserve_port
+from .next_preview import inject_nextjs_preview_basepath
+from .preview import bind_run_env, register_preview_port, resolve_success_url
+from .run_guide import build_run_guide
 from .workspace import run_dir
 
 SERVER_PROBE_SECONDS = int(os.getenv("FORGE_SERVER_PROBE", "180"))
 _RUN_ENV: dict[str, dict[str, str]] = {}
 _RUN_PROCS: dict[str, subprocess.Popen[str]] = {}
+_RUN_CTX: dict[str, dict[str, Any]] = {}
+bind_run_env(_RUN_ENV)
+_MISSING_IMPORT_RE = re.compile(r"Cannot find module '([^']+)'")
+
+
+def _npm_package_from_import(name: str) -> str | None:
+    if name.startswith(".") or name.startswith("@/"):
+        return None
+    if name.startswith("@"):
+        parts = name.split("/")
+        return "/".join(parts[:2]) if len(parts) >= 2 else name
+    return name.split("/")[0]
+
+
+def _missing_packages_from_output(blob: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in _MISSING_IMPORT_RE.finditer(blob):
+        pkg = _npm_package_from_import(match.group(1))
+        if pkg and pkg not in seen:
+            seen.add(pkg)
+            out.append(pkg)
+    return out
+
+
+def _has_vite(root: Path) -> bool:
+    return any((root / n).is_file() for n in ("vite.config.ts", "vite.config.js", "vite.config.mjs"))
+
+
+async def _build_with_fallbacks(
+    run_id: str,
+    cwd: Path,
+    stack: StackInfo,
+    cmds: CommandSet,
+    build_timeout: int,
+) -> AsyncIterator[dict[str, Any] | tuple[bool, CommandSet]]:
+    pm = resolve_pm_cmd(cwd)
+    build_cmd = cmds.build or ""
+    yield _agent_event(text=f"Building app ({build_cmd}) — may take 1–3 min…")
+    yield _agent_event(call=("run_command", {"command": build_cmd}))
+    build = await _run_step(run_id, cwd, build_cmd, timeout=build_timeout)
+    yield _agent_event(response=("run_command", build))
+    if build.get("success"):
+        yield (True, cmds)
+        return
+
+    blob = f"{build.get('stdout', '')}\n{build.get('stderr', '')}"
+    missing = _missing_packages_from_output(blob)
+    if missing:
+        yield _agent_event(
+            text=f"Build missing packages — installing: {', '.join(missing[:5])}",
+        )
+        for pkg in missing[:5]:
+            install_cmd = f"{pm} install {pkg}"
+            yield _agent_event(call=("run_command", {"command": install_cmd}))
+            step = await _run_step(run_id, cwd, install_cmd, timeout=build_timeout)
+            yield _agent_event(response=("run_command", step))
+        yield _agent_event(call=("run_command", {"command": build_cmd}))
+        build = await _run_step(run_id, cwd, build_cmd, timeout=build_timeout)
+        yield _agent_event(response=("run_command", build))
+        if build.get("success"):
+            yield (True, cmds)
+            return
+        blob = f"{build.get('stdout', '')}\n{build.get('stderr', '')}"
+
+    vite_project = stack.framework in ("vite", "react") or _has_vite(cwd)
+    if vite_project and ("error TS" in blob or "tsc" in build_cmd):
+        fallback = "npx vite build"
+        yield _agent_event(text="TypeScript check failed — building with Vite only (skip tsc)…")
+        yield _agent_event(call=("run_command", {"command": fallback}))
+        build = await _run_step(run_id, cwd, fallback, timeout=build_timeout)
+        yield _agent_event(response=("run_command", build))
+        if build.get("success"):
+            preview = f"{pm} run preview -- --host 127.0.0.1 --port $PORT"
+            yield (
+                True,
+                CommandSet(
+                    install=cmds.install,
+                    build=None,
+                    run=preview,
+                    source=f"{cmds.source}+vite-build",
+                ),
+            )
+            return
+
+    if vite_project:
+        dev_run = f"{pm} run dev -- --host 127.0.0.1 --port $PORT"
+        yield _agent_event(
+            text="Build failed — starting Vite dev server for partial UI preview (APIs may not work)…",
+        )
+        yield (
+            True,
+            CommandSet(
+                install=cmds.install,
+                build=None,
+                run=dev_run,
+                source=f"{cmds.source}+vite-dev",
+            ),
+        )
+        return
+
+    store.update_run(run_id, status="failed", error=(build.get("stderr") or blob or "Build failed")[:500])
+    yield _agent_event(text="Build failed.")
+    yield (False, cmds)
 
 
 def _agent_event(
@@ -257,15 +367,62 @@ async def _auto_env_from_example(run_id: str, cwd: Path, *, user_id: str | None 
     return {"written": True, "keys": list(defaults.keys()), "auto": True, "path": str(rel)}
 
 
+def _stash_run_ctx(
+    run_id: str,
+    *,
+    repo_url: str,
+    cwd: Path,
+    stack: StackInfo | None = None,
+    cmds: CommandSet | None = None,
+) -> None:
+    _RUN_CTX[run_id] = {
+        "repo_url": repo_url,
+        "cwd": cwd,
+        "stack": stack or StackInfo(),
+        "cmds": cmds,
+    }
+
+
+def emit_run_guide(run_id: str) -> dict[str, Any] | None:
+    """Build and store beginner local-setup guide (once per run)."""
+    for ev in store.list_events(run_id):
+        if ev.get("kind") == "run_guide":
+            return ev.get("payload")
+    run = store.get_run(run_id)
+    if not run or run.get("status") == "awaiting_env":
+        return None
+    ctx = _RUN_CTX.get(run_id, {})
+    cwd = ctx.get("cwd") or run_dir(run_id)
+    if not Path(cwd).is_dir():
+        return None
+    guide = build_run_guide(
+        repo_url=str(ctx.get("repo_url") or run.get("repo_url") or ""),
+        cwd=Path(cwd),
+        stack=ctx.get("stack") or StackInfo(),
+        cmds=ctx.get("cmds"),
+        status=str(run.get("status") or "failed"),
+        success_url=run.get("success_url"),
+        error=run.get("error"),
+    )
+    store.log_event(run_id, "run_guide", guide)
+    return guide
+
+
 def _mark_success(run_id: str, url: str, summary: str) -> None:
+    register_preview_port(run_id, url)
+    public_url = resolve_success_url(run_id, url)
     store.update_run(
         run_id,
         status="running",
-        success_url=url,
+        success_url=public_url,
         error="",
         finished_at=datetime.now(timezone.utc).isoformat(),
     )
-    store.log_event(run_id, "success", {"url": url, "summary": summary})
+    store.log_event(
+        run_id,
+        "success",
+        {"url": public_url, "internal_url": url, "summary": summary},
+    )
 
 
 async def _apply_fix(
@@ -382,7 +539,30 @@ async def stream_forge(
 ) -> AsyncIterator[dict[str, Any]]:
     url = normalize_repo_url(repo_url)
     cwd = run_dir(run_id)
+    _stash_run_ctx(run_id, repo_url=url, cwd=cwd)
 
+    try:
+        async for ev in _stream_forge_inner(
+            run_id, url, cwd, branch, start_command, resume=resume, user_id=user_id
+        ):
+            yield ev
+    finally:
+        guide = emit_run_guide(run_id)
+        if guide:
+            yield _agent_event(text=f"{guide['headline']} — see Run locally panel in the sidebar.")
+            yield {"type": "run_guide", "guide": guide}
+
+
+async def _stream_forge_inner(
+    run_id: str,
+    url: str,
+    cwd: Path,
+    branch: str | None,
+    start_command: str | None,
+    *,
+    resume: bool,
+    user_id: str | None,
+) -> AsyncIterator[dict[str, Any]]:
     if not resume:
         yield _agent_event(text=f"Lowkally pipeline — {url}")
         yield _agent_event(call=("clone_repository", {"repo_url": url, "branch": branch or ""}))
@@ -405,6 +585,7 @@ async def stream_forge(
         yield _agent_event(text=host_note)
     cmds = discover_commands(cwd, stack, start_command)
     web = is_web_project(cwd, stack, cmds)
+    _stash_run_ctx(run_id, repo_url=url, cwd=cwd, stack=stack, cmds=cmds)
     yield _agent_event(
         response=(
             "detect_stack",
@@ -514,14 +695,19 @@ async def stream_forge(
 
     if cmds.build and web and not is_dev_run_command(cmds.run):
         build_timeout = int(os.getenv("FORGE_BUILD_TIMEOUT", "600"))
-        yield _agent_event(text=f"Building app ({cmds.build}) — may take 1–3 min…")
-        yield _agent_event(call=("run_command", {"command": cmds.build}))
-        build = await _run_step(run_id, cwd, cmds.build, timeout=build_timeout)
-        yield _agent_event(response=("run_command", build))
-        if not build.get("success"):
-            store.update_run(run_id, status="failed", error=(build.get("stderr") or "Build failed")[:500])
-            yield _agent_event(text="Build failed.")
+        basepath = inject_nextjs_preview_basepath(cwd, run_id)
+        if basepath:
+            store.log_event(run_id, "preview_basepath", {"basepath": basepath})
+            yield _agent_event(text=f"Cloud preview path: {basepath}")
+        build_ok = False
+        async for item in _build_with_fallbacks(run_id, cwd, stack, cmds, build_timeout):
+            if isinstance(item, tuple):
+                build_ok, cmds = item
+            else:
+                yield item
+        if not build_ok:
             return
+        _stash_run_ctx(run_id, repo_url=url, cwd=cwd, stack=stack, cmds=cmds)
 
     run_cmd = cmds.run
     if not run_cmd:
@@ -537,4 +723,6 @@ async def stream_forge(
     async for ev in _heal_loop(run_id, cwd, stack, run_cmd, web=web, user_id=user_id):
         yield ev
 
-    _RUN_ENV.pop(run_id, None)
+    run_row = store.get_run(run_id) or {}
+    if run_row.get("status") != "running":
+        _RUN_ENV.pop(run_id, None)

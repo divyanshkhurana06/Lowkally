@@ -1,7 +1,6 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   approveEnv,
   continueRun,
@@ -15,6 +14,8 @@ import {
   getSetup,
   normalizeInsightLabels,
   normalizeRepoUrl,
+  resolvePreviewUrl,
+  runGuideFromEvents,
   saveSite,
   type AgentPart,
   type Approval,
@@ -22,9 +23,11 @@ import {
   type GitLabProject,
   type Run,
   type RunEvent,
+  type RunGuide,
   type RepoInsight,
   type Setup,
 } from "@/lib/api";
+import { RunGuidePanel } from "@/components/RunGuidePanel";
 import { queueReport } from "@/lib/reportContext";
 
 type Trace =
@@ -61,15 +64,12 @@ function eventsToTrace(events: RunEvent[]): Trace[] {
 }
 
 function ForgeApp() {
-  const searchParams = useSearchParams();
   const [setup, setSetup] = useState<Setup | null>(null);
   const [projects, setProjects] = useState<GitLabProject[]>([]);
   const [userRepos, setUserRepos] = useState<GitLabProject[]>([]);
   const [userReposError, setUserReposError] = useState("");
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-  const [repoUrl, setRepoUrl] = useState(
-    () => searchParams.get("repo") || "github.com/divyanshkhurana06/portfolio",
-  );
+  const [repoUrl, setRepoUrl] = useState("github.com/divyanshkhurana06/portfolio");
   const [branch, setBranch] = useState("");
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState("");
@@ -83,6 +83,7 @@ function ForgeApp() {
   const [offline, setOffline] = useState(false);
   const [streamError, setStreamError] = useState("");
   const [repoInsight, setRepoInsight] = useState<RepoInsight | null>(null);
+  const [runGuide, setRunGuide] = useState<RunGuide | null>(null);
   const traceRef = useRef<HTMLDivElement>(null);
 
   const scrollTrace = () => {
@@ -90,27 +91,12 @@ function ForgeApp() {
   };
 
   const refresh = useCallback(async () => {
+    let ok = false;
     try {
-      const [s, r, a] = await Promise.all([getSetup(), getRuns(), getApprovals()]);
+      const s = await getSetup();
       setSetup(s);
-      setHistory(r.runs);
-      setApprovals(a.approvals);
+      ok = true;
       setOffline(false);
-      try {
-        const auth = await getAuthMe();
-        setAuthUser(auth.user);
-        if (auth.user?.provider === "github" || auth.user?.provider === "gitlab") {
-          const ur = await getUserRepos();
-          setUserRepos(ur.repos || []);
-          setUserReposError(ur.error || "");
-        } else {
-          setUserRepos([]);
-          setUserReposError("");
-        }
-      } catch {
-        setAuthUser(null);
-        setUserRepos([]);
-      }
       if (s.gitlab_api_ok) {
         try {
           const gp = await getGitLabProjects();
@@ -120,8 +106,45 @@ function ForgeApp() {
         }
       }
     } catch {
-      setOffline(true);
+      setSetup(null);
     }
+    try {
+      const r = await getRuns();
+      setHistory(r.runs);
+      ok = true;
+      setOffline(false);
+    } catch {
+      setHistory([]);
+    }
+    try {
+      const a = await getApprovals();
+      setApprovals(a.approvals);
+      ok = true;
+      setOffline(false);
+    } catch {
+      setApprovals([]);
+    }
+    try {
+      const auth = await getAuthMe();
+      setAuthUser(auth.user);
+      if (auth.user?.provider === "github" || auth.user?.provider === "gitlab") {
+        const ur = await getUserRepos();
+        setUserRepos(ur.repos || []);
+        setUserReposError(ur.error || "");
+      } else {
+        setUserRepos([]);
+        setUserReposError("");
+      }
+    } catch {
+      setAuthUser(null);
+      setUserRepos([]);
+    }
+    if (!ok) setOffline(true);
+  }, []);
+
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("repo");
+    if (q) setRepoUrl(q);
   }, []);
 
   useEffect(() => {
@@ -141,6 +164,8 @@ function ForgeApp() {
           setTrace(fromDb);
           scrollTrace();
         }
+        const guide = runGuideFromEvents(detail.events);
+        if (guide) setRunGuide(guide);
         if (detail.run.status === "awaiting_env") {
           setPhase("Waiting for .env approval");
           const pending = await getApprovals(runId);
@@ -198,6 +223,10 @@ function ForgeApp() {
         });
       }
     }
+    if (type === "run_guide" && data && typeof data === "object") {
+      const g = data as RunGuide;
+      if (g.headline) setRunGuide(g);
+    }
     if (type === "agent" && data && typeof data === "object") {
       const d = data as { parts?: AgentPart[]; author?: string };
       const author = d.author;
@@ -254,6 +283,7 @@ function ForgeApp() {
     setRunning(true);
     setStreamError("");
     setRepoInsight(null);
+    setRunGuide(null);
     setTrace([{ t: "text", v: "Connecting to agent…" }]);
     setFinalRun(null);
     setRunId(null);
@@ -293,8 +323,11 @@ function ForgeApp() {
     setBranch(p.default_branch || "main");
   };
 
-  const liveUrl =
-    finalRun?.success_url && finalRun.success_url.startsWith("http") ? finalRun.success_url : null;
+  const liveUrl = resolvePreviewUrl(
+    runId ?? finalRun?.id,
+    finalRun?.success_url,
+    setup?.agent_public_url,
+  );
 
   const onSave = async (favorite = false) => {
     if (!repoUrl.trim()) return;
@@ -311,7 +344,7 @@ function ForgeApp() {
   return (
     <div className="min-h-screen flex flex-col">
       {offline && (
-        <div className="banner-err">Agent offline — run: bash scripts/start.sh</div>
+        <div className="banner-err">Lowkally agent unreachable — refresh the page and try again.</div>
       )}
       {streamError && !running && (
         <div className="banner-err">{streamError}</div>
@@ -363,10 +396,19 @@ function ForgeApp() {
 
           {liveUrl && (
             <Panel title="Live app">
-              <a href={liveUrl} className="success-link" target="_blank" rel="noreferrer">
-                {liveUrl}
+              <a
+                href={liveUrl}
+                className="btn btn-solid w-full"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open live preview
               </a>
-              <p className="hint mt-2">Open in a new tab — dev server started by Lowkally.</p>
+              <p className="hint mt-2 break-all">{liveUrl}</p>
+              <p className="hint mt-2">
+                The trace shows <code>http://localhost:3010</code> inside the cloud server — that is
+                not your laptop. Use the button above for the public preview.
+              </p>
               <div className="library-actions mt-2">
                 <button type="button" className="btn btn-solid" onClick={() => onSave(false)}>
                   Save to library
@@ -394,6 +436,12 @@ function ForgeApp() {
               >
                 Report this error
               </button>
+            </Panel>
+          )}
+
+          {runGuide && !running && (
+            <Panel title="Run locally for full features">
+              <RunGuidePanel guide={runGuide} />
             </Panel>
           )}
 
@@ -540,11 +588,7 @@ function InsightLabels({ labels }: { labels: string[] }) {
 }
 
 export default function ForgePage() {
-  return (
-    <Suspense fallback={<div className="page-wrap"><p className="hint">Loading…</p></div>}>
-      <ForgeApp />
-    </Suspense>
-  );
+  return <ForgeApp />;
 }
 
 function TraceLine({ item }: { item: Trace }) {
