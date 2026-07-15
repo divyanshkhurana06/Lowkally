@@ -6,7 +6,7 @@ Autonomous repository bootstrap agent — paste a git URL, get a running app.
 
 **Live demo:** https://lowkally-ui-ksy3havi2a-uc.a.run.app · **Repo:** https://github.com/divyanshkhurana06/Lowkally · **License:** [MIT](LICENSE)
 
-Clone · detect stack · install · run · heal
+Clone · detect stack · install · run
 
 ## Run locally
 
